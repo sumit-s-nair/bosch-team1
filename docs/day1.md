@@ -1,11 +1,9 @@
-# Day 1 checkpoint
+# Day 1 checkpoint runbook
 
-See [the README](../README.md) for the maintained setup, offline rehearsal, telemetry discovery and live checkpoint commands. See [architecture](architecture.md) for the system sketch.
+1. `python -m pytest -q` — offline tests pass
+2. `python -m scripts.check_setup` — all [ OK ], including LLM tool calling
+3. `python -m scripts.eyes` — tools return sensible data on a healthy system
+4. Inject a practice incident (faultctl), wait ~2 min, then `python -m agent.run --now`
+5. Check `runs/<time>/diagnosis.json`: root cause, cited evidence (each with the observed fact), decision
 
-Minimum handoff checks:
-
-1. `python -m pytest -q`
-2. `python -m scripts.mock_demo` and `python -m scripts.mock_demo --mode empty`
-3. With demo and model running, `python -m scripts.discover` and `python -m scripts.check_setup`
-4. `python main.py "<practice incident alert>" --output runs/checkpoint/diagnosis.json`
-5. Compare cause and cited quotes against full tool results in the saved artifact. Align the placeholder schema with the organizer schema before submission.
+See [architecture](architecture.md) for the system sketch.

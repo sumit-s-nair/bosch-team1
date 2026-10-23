@@ -1,48 +1,29 @@
 {
+  "$comment": "Schema for the model's diagnosis. TODO-ALIGN: map to the organiser's scoring schema when it is released.",
   "type": "object",
   "properties": {
-    "root_cause_component": {
-      "type": "string"
-    },
+    "summary": {"type": "string", "minLength": 1},
+    "symptoms": {"type": "array", "items": {"type": "string"}},
     "root_cause": {
-      "type": "string"
+      "type": "object",
+      "properties": {
+        "service": {"type": "string"},
+        "category": {"type": "string"},
+        "description": {"type": "string"}
+      },
+      "required": ["service", "category", "description"]
     },
-    "confidence": {
-      "type": "number",
-      "minimum": 0,
-      "maximum": 1
-    },
+    "confidence": {"type": "number", "minimum": 0, "maximum": 1},
     "evidence": {
       "type": "array",
       "items": {
         "type": "object",
-        "properties": {
-          "source": {
-            "type": "string",
-            "minLength": 1
-          },
-          "quote": {
-            "type": "string",
-            "minLength": 1
-          }
-        },
-        "required": [
-          "source",
-          "quote"
-        ],
-        "additionalProperties": false
+        "properties": {"id": {"type": "string", "pattern": "^\\[?E[0-9]+\\]?$"}, "why": {"type": "string"}},
+        "required": ["id", "why"]
       }
     },
-    "escalate": {
-      "type": "boolean"
-    }
+    "ruled_out": {"type": "array", "items": {"type": "string"}},
+    "open_questions": {"type": "array", "items": {"type": "string"}}
   },
-  "required": [
-    "root_cause_component",
-    "root_cause",
-    "confidence",
-    "evidence",
-    "escalate"
-  ],
-  "additionalProperties": false
+  "required": ["summary", "root_cause", "confidence", "evidence"]
 }

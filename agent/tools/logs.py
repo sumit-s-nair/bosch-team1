@@ -1,5 +1,6 @@
 """Read-only OpenSearch queries with configurable/discovered field names."""
 import re
+from functools import lru_cache
 from agent import config
 from agent.tools import http
 
@@ -15,6 +16,7 @@ def field_caps():
     return http.get(f'{config.opensearch_url()}/{index()}/_field_caps', {'fields': '*'}).get('fields', {})
 
 
+@lru_cache(maxsize=1)
 def fields():
     overrides = [config.setting('LOGS_SERVICE_FIELD'), config.setting('LOGS_LEVEL_FIELD'), config.setting('LOGS_BODY_FIELD')]
     available = field_caps() if not all(overrides) else {}
@@ -40,24 +42,37 @@ def value_at(doc, path):
     return None
 
 
-def search_documents(service=None, severity=None, text=None, minutes=15, size=30):
+NOISE_SERVICES = ['otelcol-contrib', 'otel-collector']  # collector's own debug-exporter chatter
+
+
+def search_logs(service=None, min_severity=None, text=None, minutes=15, size=30):
+    """Normalised recent logs. min_severity uses OTel numbers: 9 INFO, 13 WARN, 17 ERROR, 21 FATAL."""
     service_field, level_field, body_field = fields()
-    must = [{'range': {'@timestamp': {'gte': f'now-{max(1,min(int(minutes),1440))}m'}}}]
+    number_field = config.setting('LOGS_SEVERITY_NUMBER_FIELD', 'severity.number')
+    must = [{'range': {'@timestamp': {'gte': f'now-{max(1, min(int(minutes), 1440))}m'}}}]
     if service:
         must.append({'match_phrase': {service_field: service}})
-    if severity:
-        must.append({'match': {level_field: severity}})
+    if min_severity:
+        must.append({'range': {number_field: {'gte': int(min_severity)}}})
     if text:
         must.append({'match_phrase': {body_field: text}})
-    query = {'size': max(1,min(int(size),30)), 'sort': [{'@timestamp': 'desc'}], 'query': {'bool': {'must': must}}, '_source': ['@timestamp', service_field, level_field, body_field, 'trace_id', 'traceId']}
-    result = http.post(f'{config.opensearch_url()}/{index()}/_search', query)
-    hits = result.get('hits', {}).get('hits', [])
-    if service:
-        # Text fields may tokenize hyphenated names; retain only exact services.
-        hits = [hit for hit in hits if value_at(hit.get('_source', {}), service_field) == service]
-    return hits, body_field
+    must_not = [{'match_phrase': {service_field: s}} for s in NOISE_SERVICES]
+    query = {'size': max(1, min(int(size), 200)), 'sort': [{'@timestamp': 'desc'}],
+             'query': {'bool': {'must': must, 'must_not': must_not}}}
+    hits = http.post(f'{config.opensearch_url()}/{index()}/_search', query).get('hits', {}).get('hits', [])
+    out = []
+    for hit in hits:
+        src = hit.get('_source', {})
+        svc = value_at(src, service_field)
+        if service and svc != service:   # text fields tokenize hyphenated names; keep exact matches only
+            continue
+        out.append({'id': hit.get('_id'), 'ts': src.get('@timestamp'), 'service': svc,
+                    'severity': value_at(src, level_field), 'body': str(value_at(src, body_field))[:400],
+                    'trace_id': src.get('traceId') or src.get('traceID') or src.get('trace_id')})
+    return out
 
 
-def search_logs(service=None, severity=None, text=None, minutes=15, size=30):
-    hits, _ = search_documents(service, severity, text, minutes, size)
-    return [hit['_source'] for hit in hits]
+def get_log(doc_id):
+    res = http.post(f'{config.opensearch_url()}/{index()}/_search', {'query': {'ids': {'values': [doc_id]}}})
+    hits = res.get('hits', {}).get('hits', [])
+    return hits[0]['_source'] if hits else None
