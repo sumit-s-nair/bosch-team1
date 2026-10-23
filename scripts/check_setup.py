@@ -1,61 +1,64 @@
-"""Checkpoint 0 sanity check: demo up, telemetry readable, LLM key works.
-Run from repo root:  python -m scripts.check_setup
-"""
-import sys
-sys.path.insert(0, ".")
-
+"""Read-only integration check: python -m scripts.check_setup [--skip-llm]."""
+import argparse
+import json
 from agent import config
 from agent.tools import containers, logs, metrics, traces
-
-ok_all = True
-
-
-def check(name, fn):
-    global ok_all
-    try:
-        msg = fn()
-        print(f"[ OK ] {name}: {msg}")
-    except Exception as e:
-        ok_all = False
-        print(f"[FAIL] {name}: {type(e).__name__}: {e}")
+from agent.loop import TOOLS
 
 
 def c_containers():
-    cs = containers.list_containers()
-    bad = [c["name"] for c in cs if c["state"] != "running"]
-    if not cs:
-        raise RuntimeError("no containers on network opentelemetry-demo - is the demo up?")
-    return f"{len(cs)} containers, not running: {bad or 'none'}"
+    rows = containers.list_containers()
+    if not rows:
+        raise RuntimeError('No containers on configured demo network')
+    bad = [row['name'] for row in rows if row['state'] != 'running']
+    return {'count': len(rows), 'not_running': bad}
 
 
 def c_prom():
-    up = metrics.promql("up")
-    calls = metrics.metric_names("calls")
-    return f"{len(up)} 'up' series; span-metric names: {calls[:3]}"
+    return metrics.settings()
 
 
 def c_jaeger():
-    s = traces.services()
-    return f"{len(s)} services: {sorted(s)[:8]}..."
+    names = traces.services()
+    if not names:
+        raise RuntimeError('No trace services; wait for load and telemetry')
+    return {'services': names}
 
 
 def c_logs():
-    hits = logs.search_logs(minutes=10, size=3)
-    return f"{len(hits)} recent log docs at {config.opensearch_url()}"
+    fields = logs.fields()
+    hits = logs.search_logs(minutes=15, size=1)
+    if not hits:
+        raise RuntimeError('No recent logs; check load, ingestion and LOGS_INDEX')
+    return {'fields': fields, 'recent_documents': len(hits)}
 
 
 def c_llm():
-    import litellm
-    r = litellm.completion(model=config.LLM_MODEL,
-                           messages=[{"role": "user", "content": "Reply with just: pong"}],
-                           max_tokens=5)
-    return f"{config.LLM_MODEL} -> {r.choices[0].message.content!r}"
+    settings = config.llm_settings()
+    response = config.llm_client().chat.completions.create(model=settings['model'], messages=[{'role': 'user', 'content': 'For this connection test, call container_health with no arguments. Do not answer in prose.'}], tools=TOOLS, tool_choice='auto', max_tokens=256)
+    calls = response.choices[0].message.tool_calls or []
+    if not any(call.function.name == 'container_health' and json.loads(call.function.arguments) == {} for call in calls):
+        raise RuntimeError('Model answered without the requested tool call; verify tool-calling support and context size')
+    return {'model': settings['model'], 'tool_calling': True}
 
 
-check("Containers", c_containers)
-check("Prometheus", c_prom)
-check("Jaeger", c_jaeger)
-check("OpenSearch logs", c_logs)
-check("LLM", c_llm)
-print("\nALL GOOD" if ok_all else "\nSome checks failed (see above)")
-sys.exit(0 if ok_all else 1)
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--skip-llm', action='store_true')
+    args = parser.parse_args()
+    checks = [('Containers', c_containers), ('Prometheus', c_prom), ('Jaeger', c_jaeger), ('OpenSearch', c_logs)]
+    if not args.skip_llm:
+        checks.append(('LLM tool calling', c_llm))
+    success = True
+    for name, fn in checks:
+        try:
+            print(f'[ OK ] {name}: {json.dumps(fn())}')
+        except Exception as exc:
+            success = False
+            print(f'[FAIL] {name}: {type(exc).__name__}: {exc}')
+    print('ALL GOOD' if success else 'Some checks failed; correct these before live investigation')
+    return 0 if success else 1
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

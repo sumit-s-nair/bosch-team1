@@ -1,30 +1,32 @@
-"""Container health via the docker CLI (read-only commands only)."""
+"""Read-only Docker health on the demo network; never reads config or env."""
 import json
 import subprocess
-
-READ_ONLY = ("ps", "inspect", "stats", "logs")
-
-
-def _docker(*args) -> str:
-    assert args[0] in READ_ONLY, "containers tool is read-only"
-    return subprocess.run(["docker", *args], capture_output=True, text=True, timeout=20).stdout
+from agent import config
 
 
-def list_containers() -> list:
-    out = _docker("ps", "-a", "--filter", "network=opentelemetry-demo", "--format", "{{json .}}")
-    rows = [json.loads(l) for l in out.splitlines() if l.strip()]
-    return [{"name": r["Names"], "state": r["State"], "status": r["Status"]} for r in rows]
+def _docker(*args):
+    if not args or args[0] not in ('ps', 'inspect', 'stats'):
+        raise ValueError('Docker operation is not allowlisted')
+    return subprocess.run(['docker', *args], capture_output=True, text=True, timeout=config.http_timeout(), check=True).stdout
 
 
-def inspect(name: str) -> dict:
-    d = json.loads(_docker("inspect", name) or "[{}]")[0]
-    st = d.get("State", {})
-    return {"name": name, "status": st.get("Status"), "running": st.get("Running"),
-            "restart_count": d.get("RestartCount"), "exit_code": st.get("ExitCode"),
-            "oom_killed": st.get("OOMKilled"), "started_at": st.get("StartedAt"),
-            "finished_at": st.get("FinishedAt"), "error": st.get("Error")}
+def list_containers():
+    out = _docker('ps', '-a', '--filter', 'network='+config.setting('DOCKER_NETWORK', 'opentelemetry-demo'), '--format', '{{json .}}')
+    rows = [json.loads(line) for line in out.splitlines() if line.strip()]
+    return [{'name': row['Names'], 'id': row['ID'], 'state': row['State'], 'status': row['Status']} for row in rows]
 
 
-def stats() -> list:
-    out = _docker("stats", "--no-stream", "--format", "{{json .}}")
-    return [json.loads(l) for l in out.splitlines() if l.strip()]
+def inspect(name):
+    if not name or name.startswith('-'):
+        raise ValueError('Invalid container name')
+    out = _docker('inspect', '--format', '{"state":{{json .State}},"restart_count":{{json .RestartCount}}}', name)
+    data = json.loads(out)
+    state = data.get('state', {})
+    return {'name': name, 'status': state.get('Status'), 'health': state.get('Health', {}).get('Status'), 'running': state.get('Running'), 'restart_count': data.get('restart_count'), 'exit_code': state.get('ExitCode'), 'oom_killed': state.get('OOMKilled'), 'started_at': state.get('StartedAt'), 'finished_at': state.get('FinishedAt')}
+
+
+def stats():
+    names = [row['name'] for row in list_containers()]
+    if not names:
+        return []
+    return [json.loads(line) for line in _docker('stats', '--no-stream', '--format', '{{json .}}', *names).splitlines() if line.strip()]

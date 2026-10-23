@@ -5,3 +5,5 @@ opentelemetry-demo/
 __pycache__/
 *.pyc
 runs/
+
+.pytest_cache/
