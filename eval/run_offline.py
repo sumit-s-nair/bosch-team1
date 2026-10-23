@@ -23,7 +23,7 @@ def all_tools(L):
     from agent import observe
     out = {}
     for name, (fn, _, params) in observe.TOOLS.items():
-        if "service" in params and not params["service"].endswith("?"):
+        if any(not t.endswith("?") for t in params.values()):   # needs an argument (service, trace_id, ...)
             continue
         out[name] = fn(L)
     return out
@@ -41,6 +41,7 @@ def tool_check(sc, verbose=False):
         if s in sc["services"]:
             outs[f"service_operations({s})"] = observe.service_operations(L, s)
             outs[f"trace_errors({s})"] = observe.trace_errors(L, s)
+            outs[f"error_breakdown({s})"] = observe.TOOLS["error_breakdown"][0](L, s)
     abnormal = [i for i in L.items.values() if i["anomalous"]]
     text = " ".join((i["detail"] + " " + (i["ref"] or "")).lower() for i in abnormal)
     exp = sc["expected"]["services"]
@@ -55,7 +56,9 @@ def tool_check(sc, verbose=False):
 
 
 def score(sc, d):
+    from agent import actions
     exp = sc["expected"]
+    p = actions.plan(d)
     rc = d.get("root_cause", {})
     svc_ok = (not exp["services"] and d["decision"] in exp["decision"]) or \
              any(s == (rc.get("service") or "").lower() for s in exp["services"])
@@ -63,6 +66,9 @@ def score(sc, d):
     return {"scenario": sc["name"], "decision": d["decision"], "service": rc.get("service"), "category": rc.get("category"),
             "confidence": d["confidence"], "service_ok": svc_ok, "category_ok": cat_ok,
             "correct": svc_ok and (cat_ok or not exp["services"]),
+            "summary": d.get("summary"),
+            "proposed_fix": f"{p['action']}({', '.join(f'{k}={v}' for k, v in p['params'].items())})" if p else "none: escalate to human",
+            "fix_reason": p["reason"] if p else None,
             "seconds": d.get("investigation_seconds"), "tools": [t["tool"] for t in d["tool_trail"] if t["by"] == "llm"]}
 
 
@@ -109,7 +115,7 @@ def main():
     ap.add_argument("names", nargs="*")
     ap.add_argument("--tools", action="store_true", help="no LLM; check alerts and tool signals")
     ap.add_argument("--list", action="store_true")
-    ap.add_argument("--pipeline", metavar="SCENARIO", help="run every phase (detect..report) on one scenario")
+    ap.add_argument("--pipeline", nargs="+", metavar="SCENARIO", help="run every phase (detect..report) on these scenarios")
     a = ap.parse_args()
     if a.list:
         for f in scenarios.ALL:
@@ -118,7 +124,10 @@ def main():
     names = a.names or scenarios.names()
 
     if a.pipeline:
-        return run_pipeline(a.pipeline)
+        for n in a.pipeline:
+            print(f"\n{'#' * 70}")
+            run_pipeline(n)
+        return 0
 
     if a.tools:
         rows = [tool_check(scenarios.get(n), verbose=len(names) == 1) for n in names]
@@ -143,6 +152,8 @@ def main():
         results.append(r)
         print(f"-> {r['decision']} | {r['service']} / {r['category']} | conf {r['confidence']} | "
               f"{'CORRECT' if r['correct'] else 'wrong'} | {r['seconds']}s | tools {r['tools']}")
+        print(f"   summary: {r['summary']}")
+        print(f"   fix:     {r['proposed_fix']}")
     json.dump(results, open(os.path.join(out_dir, "summary.json"), "w"), indent=2)
     print(f"\n{sum(r['correct'] for r in results)}/{len(results)} correct. Saved {out_dir}")
     return 0

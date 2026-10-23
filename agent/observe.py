@@ -94,14 +94,16 @@ def _bounded_tool(fn):
 
 
 @_bounded_tool
-def service_overview(L: Ledger, window="5m", service=None, group_by=None):
+def service_overview(L: Ledger, window=None, service=None, group_by=None):
     """All services: request rate, error rate and p95 latency now vs baseline. Anomalies first."""
-    metric_details.window_ok(window)
+    if window is not None:
+        metric_details.window_ok(window)
     if group_by is not None:
-        result = metric_details.traffic(service, group_by, window, TRAFFIC_SPIKE_RATIO)
+        result = metric_details.traffic(service, group_by, window or "5m", TRAFFIC_SPIKE_RATIO)
         for item in result['items']:
             detail = f"{item['service']} {group_by} {item[group_by]}: {item['rate_per_s']} rps, baseline={item['baseline_rate_per_s']}, ratio={item['ratio']}"
-            item['evidence_id'] = L.add('metric', detail, ref=f"{result['metric']}:{item[group_by]}", value=dict(item), anomalous=False)
+            item['evidence_id'] = L.add('metric', detail, ref=f"{result['metric']}:{item[group_by]}", value=dict(item),
+                                        anomalous=bool(item.get('spike')))
         return result
     h = service_health_raw(window=window, strict=True)
     if service is not None:
@@ -363,7 +365,11 @@ def resource_usage(L: Ledger, service=None, window="10m"):
     for kind in ('gc', 'heap', 'process_cpu'):
         if kind in runtime:
             value = runtime[kind]
-            value['evidence_id'] = L.add('metric', f"{service} runtime {kind}: {json.dumps(value)}", ref=value['metric'], value=dict(value), anomalous=False)
+            now, base = value.get('now'), value.get('baseline')
+            anom = (kind == 'heap' and bool(runtime.get('memory_growing'))) or \
+                   (kind in ('gc', 'process_cpu') and now is not None and base is not None and base > 0 and now > 3 * base)
+            value['evidence_id'] = L.add('metric', f"{service} runtime {kind}: {json.dumps(value)}", ref=value['metric'],
+                                         value=dict(value), anomalous=anom)
     return result
 
 
@@ -408,5 +414,9 @@ TOOLS = {
     "cache_health": (cache_health, "Health of the Valkey/Redis cache used by the cart service.", {}),
 }
 
-from agent.tools.observe_db import TOOLS_DB   # noqa: E402  (separate tool module)
+from agent.tools.observe_db import TOOLS_DB   # noqa: E402  (separate tool modules)
+from agent.tools.observe_p1 import TOOLS_P1   # noqa: E402
+from agent.tools.observe_p2 import TOOLS_P2   # noqa: E402
 TOOLS.update(TOOLS_DB)
+TOOLS.update(TOOLS_P1)
+TOOLS.update(TOOLS_P2)

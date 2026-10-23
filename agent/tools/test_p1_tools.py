@@ -77,7 +77,7 @@ def test_single_product_concentration(monkeypatch):
     ss += [span(False, p) for p in ["A1", "B2", "C3", "D4"] * 10]
     fake_spans(monkeypatch, ss)
     out = error_breakdown(Ledger(), "product-catalog")
-    assert "app.product.id=OLJCESPC7Z fails 100%" in out and "Fail Feature Flag" in out
+    assert "app.product.id=OLJCESPC7Z fails 100%" in out and "Fail Feature Flag" not in out and "redacted" in out  # flag text must never reach the model
 
 
 def test_intermittent_random_not_attributed(monkeypatch):

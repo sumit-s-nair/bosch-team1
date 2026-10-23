@@ -30,6 +30,8 @@ RUNBOOK = {
     "dependency_failure": ("restart_service", lambda rc: {"service": rc["service"]}),
     "service_error": ("restart_service", lambda rc: {"service": rc["service"]}),
     "traffic_spike": ("throttle_load_generator", lambda rc: {"users": 5}),
+    "database_unavailable": ("restart_service", lambda rc: {"service": rc["service"]}),
+    # database_slow / latency_or_network / unknown: no safe allowlisted fix -> escalate with findings
 }
 NOT_RESTARTABLE = {"load-generator", "otel-collector", "prometheus", "jaeger", "opensearch", "grafana", "flagd", "flagd-ui"}
 

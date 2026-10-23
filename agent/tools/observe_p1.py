@@ -3,6 +3,7 @@ Same contract as the other tools: numbers computed in code, SHORT text summary, 
 Merge TOOLS_P1 into your TOOLS dict:   TOOLS.update(TOOLS_P1)"""
 from collections import Counter, defaultdict
 
+from agent import flagguard
 from agent.evidence import Ledger
 from agent.tools import metrics, traces
 
@@ -130,9 +131,12 @@ def _attrs(s: dict) -> dict:
 def error_breakdown(L: Ledger, service: str, operation: str | None = None, minutes: int = 5) -> str:
     """Which span attribute values (product id, route, status code, ...) the errors of one service concentrate on.
     Separates 'one product always fails' (concentrated) from 'random fraction fails' (spread evenly)."""
-    plain = traces.find_spans(service, minutes=minutes, limit=200, operation=operation)
+    clean = lambda ss: [dict(x, message=flagguard.scrub(x["message"]),
+                             attrs={k: v for k, v in (x.get("attrs") or {}).items() if not flagguard.is_flag_text(k)})
+                        for x in ss if not flagguard.is_flag_span(x)]
+    plain = clean(traces.find_spans(service, minutes=minutes, limit=200, operation=operation))
     try:
-        err_only = traces.find_spans(service, minutes=minutes, limit=50, error_only=True, operation=operation)
+        err_only = clean(traces.find_spans(service, minutes=minutes, limit=50, error_only=True, operation=operation))
     except Exception:
         err_only = []
     mine = [s for s in plain if s["service"] == service] or plain

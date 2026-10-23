@@ -5,7 +5,7 @@ Run the tests:  python -m pytest agent/tools/observe_p2.py -v"""
 import re
 from collections import Counter, defaultdict
 
-from agent import config
+from agent import config, flagguard
 from agent.evidence import Ledger
 from agent.tools import containers, http, logs, metrics, traces
 
@@ -42,8 +42,14 @@ def logs_for_trace(L: Ledger, trace_id: str, minutes: int = 120) -> str:
     rows = []
     for h in hits:
         src = h.get("_source", {})
-        rows.append({"id": h.get("_id"), "ts": str(logs.value_at(src, tf) or ""), "service": logs.value_at(src, sf) or "?",
-                     "sev": str(logs.value_at(src, lf) or "").upper(), "body": str(logs.value_at(src, bf))[:200]})
+        svc = logs.value_at(src, sf) or "?"
+        if svc in logs.NOISE_SERVICES:          # includes flagd: its logs would reveal flag state
+            continue
+        rows.append({"id": h.get("_id"), "ts": str(logs.value_at(src, tf) or ""), "service": svc,
+                     "sev": str(logs.value_at(src, lf) or "").upper(),
+                     "body": flagguard.scrub(str(logs.value_at(src, bf))[:200])})
+    if not rows:
+        return f"No application log lines carry trace id {trace_id} in the last {minutes}m."
     warn = [r for r in rows if r["sev"] in WARN_PLUS]
     shown = warn[:MAX_WARN_LINES]
     shown += [r for r in rows if r not in shown][:MAX_LOG_LINES - len(shown)]
@@ -73,6 +79,7 @@ def get_trace(L: Ledger, trace_id: str) -> str:
         spans = traces.get_trace(trace_id)
     except Exception as e:
         return f"Could not fetch trace {trace_id}: {e}"
+    spans = [dict(x, message=flagguard.scrub(x["message"])) for x in (spans or []) if not flagguard.is_flag_span(x)]
     if not spans:
         return f"Trace {trace_id} not found (expired, or not sampled)."
     ids = {s["span_id"] for s in spans}

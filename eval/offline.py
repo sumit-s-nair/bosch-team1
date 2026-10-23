@@ -96,7 +96,7 @@ def _spans(sc, chains):
                         "kind": "", "error": is_err,
                         "message": msg if (is_err and i == origin) else ("" if not is_err else "rpc error: downstream failure"),
                         "http_status": None, "rpc_status": None, "duration_ms": dur, "start_ns": 0,
-                        "attributes": attrs})
+                        "attrs": attrs})
             parent = sid
     return out
 

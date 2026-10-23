@@ -54,4 +54,6 @@ def _prevention(rc):
         "service_error": "Alert on per-operation error rate and add a regression test for the failing path.",
         "traffic_spike": "Add rate limiting at the gateway and autoscaling for the frontend.",
         "latency_or_network": "Alert on client-vs-server latency gaps between services; add timeouts.",
+        "database_unavailable": "Health-check the database, add connection retry/backoff in product-catalog and alert on DB container exits.",
+        "database_slow": "Alert on DB lock waits and query p95; avoid long ACCESS EXCLUSIVE locks; add statement timeouts.",
     }.get(rc.get("category"), "Review the findings and add an alert for the observed symptom.")

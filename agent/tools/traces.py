@@ -6,7 +6,7 @@ import time
 from functools import lru_cache
 from urllib.parse import quote
 
-from agent import config
+from agent import config, flagguard
 from agent.tools import http
 
 CANDIDATE_BASES = [config.jaeger_url(), "http://localhost:8080/jaeger/ui", "http://localhost:8080/jaeger"]
@@ -34,6 +34,17 @@ def services() -> list:
 
 
 # ---------- normalisation ----------
+def _clean_attrs(attrs: dict) -> dict:
+    """Span attributes for the tools, minus anything flag-related (keys like feature_flag.*, or values naming flags)."""
+    return {k: flagguard.scrub(v) if isinstance(v, str) else v for k, v in attrs.items()
+            if not flagguard.is_flag_text(k) and v is not None}
+
+
+def _safe(spans: list) -> list:
+    """Every span leaving this module: flagd spans and calls to flagd removed, messages scrubbed."""
+    return [dict(s, message=flagguard.scrub(s["message"])) for s in spans if not flagguard.is_flag_span(s)]
+
+
 def _attr_val(v: dict):
     for k in ("stringValue", "intValue", "boolValue", "doubleValue"):
         if k in v:
@@ -69,6 +80,7 @@ def _otlp_spans(payload) -> list:
                         "rpc_status": attrs.get("rpc.grpc.status_code"),
                         "duration_ms": (int(s.get("endTimeUnixNano", 0)) - int(s.get("startTimeUnixNano", 0))) / 1e6,
                         "start_ns": int(s.get("startTimeUnixNano", 0)),
+                        "attrs": _clean_attrs(attrs),
                     })
     return spans
 
@@ -94,6 +106,7 @@ def _legacy_spans(traces: list) -> list:
                 "http_status": tags.get("http.response.status_code") or tags.get("http.status_code"),
                 "rpc_status": tags.get("rpc.grpc.status_code"),
                 "duration_ms": s.get("duration", 0) / 1000, "start_ns": s.get("startTime", 0) * 1000,
+                "attrs": _clean_attrs(tags),
             })
     return spans
 
@@ -125,11 +138,11 @@ def find_spans(service: str, minutes: int = 10, limit: int = 30, error_only: boo
         if error_only:
             params["tags"] = '{"error":"true"}'
         spans = _legacy_spans(http.get(f"{base}/api/traces", params).get("data") or [])
-    return spans
+    return _safe(spans)
 
 
 def get_trace(trace_id: str) -> list:
     flavour, base = _api()
     if flavour == "v3":
-        return _otlp_spans(http.get(f"{base}/api/v3/traces/{quote(trace_id, safe='')}"))
-    return _legacy_spans(http.get(f"{base}/api/traces/{quote(trace_id, safe='')}").get("data") or [])
+        return _safe(_otlp_spans(http.get(f"{base}/api/v3/traces/{quote(trace_id, safe='')}")))
+    return _safe(_legacy_spans(http.get(f"{base}/api/traces/{quote(trace_id, safe='')}").get("data") or []))

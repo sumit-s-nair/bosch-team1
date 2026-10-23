@@ -241,7 +241,7 @@ def cache_unavailable():
 
 def db_unavailable():
     sc = scenario("db_unavailable", "The Postgres database (astronomy-db) behind product-catalog is down.",
-                  {"decision": ["propose_fix", "escalate"], "services": ["astronomy-db"], "categories": ["dependency_failure", "container_down"]})
+                  {"decision": ["propose_fix", "escalate"], "services": ["astronomy-db"], "categories": ["dependency_failure", "container_down", "database_unavailable"]})
     msg = 'failed to query product: dial tcp 172.18.0.5:5432: connect: connection refused'
     cont(sc, "astronomy-db", state="exited", status="Exited (0) 2 minutes ago")
     svc(sc, "product-catalog", err=1.0); svc(sc, "frontend", err=.4); svc(sc, "recommendation", err=1.0)
