@@ -141,7 +141,7 @@ def test_old_signatures_and_schema(prometheus):
     assert isinstance(observe.service_overview(Ledger()), str)
     assert 'summary' in observe.resource_usage(Ledger())
     specs = brain._tool_specs(['store'])
-    assert len(specs) == len(observe.TOOLS) == 8
+    assert len(specs) == len(observe.TOOLS) == 9   # 8 original tools + db_health
     parameters = {s['function']['name']: s['function']['parameters'] for s in specs}
     assert parameters['resource_usage']['required'] == []
     assert parameters['service_overview']['properties']['group_by']['enum'] == ['route', 'client']

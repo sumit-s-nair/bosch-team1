@@ -79,11 +79,25 @@ Each run writes `runs/<timestamp>/diagnosis.json` (summary, root cause, confiden
 4. **Diagnose** — the model returns JSON: root cause, category, confidence, cited evidence ids.
 5. **Validate** — the JSON is schema-checked (one retry). Cited ids not produced by a tool are dropped. Confidence is capped if evidence is missing, if none of it is abnormal by code thresholds, or if it doesn't mention the blamed service. Below 0.7 the agent escalates; with no alert and nothing abnormal it reports `no_incident`.
 
+## Tools (`agent/observe.py`)
+| Tool | What it answers |
+|---|---|
+| `service_overview` | Request rate, error % and p95 per service vs baseline; services that went silent; optional route/client breakdown |
+| `service_operations` | Per-operation errors and latency for one service, incl. outgoing calls |
+| `trace_errors` | Which downstream span errors originate from |
+| `error_logs` | Recent WARN/ERROR logs grouped by message |
+| `container_health` | Stopped / restarting / OOM / recently restarted containers, CPU starved or throttled, memory pressure |
+| `resource_usage` | Top CPU/memory/memory-growth containers; runtime GC/heap/CPU for one service |
+| `recent_changes` | Containers (re)started recently (deployment-history proxy) |
+| `cache_health` | Valkey/Redis cache behind cart |
+| `db_health` (`agent/tools/observe_db.py`) | Postgres `astronomy-db` behind product-catalog: container, metric freshness, connections, deadlocks/locks, DB query latency, code-computed verdict (down / slow-lock contention / errors / healthy) |
+
 ## Layout
 ```
 agent/
   config.py              endpoints + LLM settings (.env)
   tools/                 raw read-only clients: Prometheus, Jaeger (v3/legacy), OpenSearch, docker
+  tools/observe_db.py    db_health tool (Postgres astronomy-db), merged into observe.TOOLS
   observe.py             LLM-facing tools with summaries and evidence ids
   evidence.py            evidence ledger
   detector.py            alert rules
@@ -109,6 +123,6 @@ Runtime health in `resource_usage(service=..., window="10m")` depends on the met
 
 Traffic breakdowns in `service_overview(window="5m", service=None, group_by="route" or "client")` depend on the span labels available in this demo version. Missing route/client labels produce notes. The baseline is the preceding hour excluding the current window; missing/zero baselines leave ratios unknown. Gateway counters are included only when discovered and compatible with the requested service. Global gateway counters cannot reliably be attributed to one service.
 
-`memory_growing` (>20% growth) and per-route `spike` (>3x baseline) are plain numerical hints, not incident conclusions. Values are returned with evidence IDs; list output is capped and can be shortened further to stay below roughly 3000 characters. The tool registry remains at eight tools.
+`memory_growing` (>20% growth) and per-route `spike` (>3x baseline) are plain numerical hints, not incident conclusions. Values are returned with evidence IDs; list output is capped and can be shortened further to stay below roughly 3000 characters. The tool registry has nine tools (`db_health` added).
 
 To verify these extensions against the live demo, run `python -m scripts.check_extensions --service <exact-service-name>` (omit `--service` to discover a service emitting runtime metrics). It prints the actual metric-name list and raw tool outputs, and saves them under `runs/runtime-validation/`. This is a diagnostic script, not an additional agent tool.

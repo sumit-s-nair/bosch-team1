@@ -372,3 +372,6 @@ TOOLS = {
     "recent_changes": (recent_changes, "Deployment history proxy: containers (re)started recently.", {}),
     "cache_health": (cache_health, "Health of the Valkey/Redis cache used by the cart service.", {}),
 }
+
+from agent.tools.observe_db import TOOLS_DB   # noqa: E402  (separate tool module)
+TOOLS.update(TOOLS_DB)
