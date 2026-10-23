@@ -1,33 +1,47 @@
 # Architecture — Team 1 AI On-Call Engineer
 
 ```mermaid
-flowchart TD
-    DEMO[(OpenTelemetry Shop<br/>Prometheus, Jaeger, OpenSearch, Docker)]
-    FLAG[flagd and flag UI]
-    OFF[(Offline bundles)]
+flowchart LR
+    subgraph Demo["OpenTelemetry Astronomy Shop (Docker)"]
+        SVC[Microservices] --> COL[OTel Collector]
+        COL --> PROM[(Prometheus<br/>metrics)]
+        COL --> JAE[(Jaeger<br/>traces)]
+        COL --> OS[(OpenSearch<br/>logs)]
+        DOCK[(Docker engine<br/>container state)]
+        FLAG[flagd and flag UI]
+    end
 
-    DEMO --> GW
+    OFF[(Offline incident bundles<br/>fallback)]
+
+    subgraph Agent["Our agent (Python, local)"]
+        GW["Safe-read gateway<br/>flag filter, field scrubbing,<br/>docker and file limits"]
+        DET[Detector<br/>rule-based alerts] --> SWEEP[Fixed sweep<br/>overview, containers, restarts]
+        SWEEP --> LOOP[Qwen3 8B via Ollama<br/>picks follow-up tools<br/>adaptive step and time cap]
+        LOOP <--> TOOLS[Read-only tools<br/>summaries + evidence ids<br/>incl. deploy history]
+        LOOP --> DIAG[Diagnosis JSON]
+        DIAG --> VAL["Evidence validator<br/>ids exist, values match,<br/>coverage-aware confidence"]
+        VAL -->|confidence below 0.7| ESC[Escalate to human<br/>with findings]
+        VAL -->|confidence 0.7 or more| PROP[Propose allowlisted fix<br/>plus rollback plan]
+        PROP --> DRY[Dry run<br/>read-only preview]
+        DRY --> APPROVE{Human approval<br/>kill switch active}
+        APPROVE -->|rejected| REP
+        APPROVE -->|approved| ACT[Action API<br/>plus audit log]
+        ACT --> VERIFY[Verify recovery<br/>re-check alert signals]
+        VERIFY -->|still failing or new symptom| LOOP
+        VERIFY -->|not recovered| RB[Approved rollback<br/>or escalate]
+        VERIFY -->|recovered| REP
+        RB --> REP
+        ESC --> REP[Incident report<br/>provided JSON schema + markdown]
+    end
+
+    PROM --> GW
+    JAE --> GW
+    OS --> GW
+    DOCK --> GW
     OFF --> GW
-    FLAG -. blocked .-x GW
-
-    GW[Safe-read gateway] --> DET[Detector]
-    DET --> SWEEP[Sweep]
-    SWEEP --> LOOP[LLM investigation loop]
-    LOOP <--> TOOLS[Read-only tools]
-    LOOP --> VAL[Evidence validator]
-
-    VAL -->|low confidence| ESC[Escalate to human]
-    VAL -->|confident| PROP[Propose fix + rollback]
-    PROP --> DRY[Dry run]
-    DRY --> APPROVE{Human approval<br/>+ kill switch}
-    APPROVE -->|rejected| REP
-    APPROVE -->|approved| ACT[Action API]
-    ACT --> VERIFY[Verify recovery]
-    VERIFY -->|still failing| LOOP
-    VERIFY -->|not recovered| RB[Rollback or escalate]
-    VERIFY -->|recovered| REP
-    RB --> REP
-    ESC --> REP[Incident report]
+    GW --> DET
+    GW --> TOOLS
+    FLAG -. blocked at every layer .-x GW
 ```
 
 ## What each part does
