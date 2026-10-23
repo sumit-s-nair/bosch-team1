@@ -1,0 +1,7 @@
+# The demo is cloned here for convenience but is NOT part of our repo (editing it is out of scope)
+opentelemetry-demo/
+.env
+.venv/
+__pycache__/
+*.pyc
+runs/
