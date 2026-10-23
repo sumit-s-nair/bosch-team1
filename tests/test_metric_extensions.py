@@ -1,6 +1,7 @@
 import json
 import pytest
-from agent import brain, metric_details, observe, mock_tools
+from agent import brain, observe
+from agent.tools import metric_details, mock_tools
 from agent.evidence import Ledger
 from agent.tools import metrics, http
 

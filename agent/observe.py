@@ -7,8 +7,7 @@ from collections import Counter, defaultdict
 from datetime import datetime, timezone
 
 from agent.evidence import Ledger
-from agent import metric_details
-from agent.tools import containers, logs, metrics, traces
+from agent.tools import containers, logs, metrics, traces, metric_details
 
 NOW = "2m"                      # current window
 BASE = "15m offset 20m"         # baseline window (before a fresh incident)

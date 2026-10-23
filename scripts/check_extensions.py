@@ -2,7 +2,8 @@
 import argparse
 import json
 from pathlib import Path
-from agent import metric_details, observe
+from agent import observe
+from agent.tools import metric_details
 from agent.evidence import Ledger
 
 
