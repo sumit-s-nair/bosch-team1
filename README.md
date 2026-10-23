@@ -102,3 +102,13 @@ docs/architecture.md     one-page architecture
 - Any URL touching feature-flag sources (flagd, flag UI/API, ports 8013/8016) is refused in `agent/tools/http.py`.
 - System changes only via the Action API and only after human approval (Day 2, WIP).
 
+
+## Known limitations
+
+Runtime health in `resource_usage(service=..., window="10m")` depends on the metrics each service emits. Runtime kind is inferred from discovered metric families, not service names. Unsupported/missing GC, heap or process-CPU metrics are reported in notes. The global metric-name list is cached for 60 seconds; series are checked for the requested service. Container summaries remain available without a service argument.
+
+Traffic breakdowns in `service_overview(window="5m", service=None, group_by="route" or "client")` depend on the span labels available in this demo version. Missing route/client labels produce notes. The baseline is the preceding hour excluding the current window; missing/zero baselines leave ratios unknown. Gateway counters are included only when discovered and compatible with the requested service. Global gateway counters cannot reliably be attributed to one service.
+
+`memory_growing` (>20% growth) and per-route `spike` (>3x baseline) are plain numerical hints, not incident conclusions. Values are returned with evidence IDs; list output is capped and can be shortened further to stay below roughly 3000 characters. The tool registry remains at eight tools.
+
+To verify these extensions against the live demo, run `python -m scripts.check_extensions --service <exact-service-name>` (omit `--service` to discover a service emitting runtime metrics). It prints the actual metric-name list and raw tool outputs, and saves them under `runs/runtime-validation/`. This is a diagnostic script, not an additional agent tool.
