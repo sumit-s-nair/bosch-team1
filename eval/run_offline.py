@@ -20,7 +20,7 @@ from eval import offline, scenarios  # noqa: E402
 
 
 def all_tools(L):
-    from agent import observe
+    from agent.tools import observe
     out = {}
     for name, (fn, _, params) in observe.TOOLS.items():
         if any(not t.endswith("?") for t in params.values()):   # needs an argument (service, trace_id, ...)
@@ -31,7 +31,8 @@ def all_tools(L):
 
 def tool_check(sc, verbose=False):
     """Without the LLM: alerts fire? expected service present in abnormal evidence after a full sweep?"""
-    from agent import detector, observe
+    from agent import detector
+    from agent.tools import observe
     from agent.evidence import Ledger
     offline.install(sc)
     alerts = detector.check()

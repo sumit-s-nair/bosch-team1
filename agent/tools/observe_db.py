@@ -1,7 +1,7 @@
 """Database investigation tool: db_health for the Postgres database astronomy-db behind product-catalog.
 Same contract as the other tools: numbers computed in code, SHORT text summary, evidence ids [E#].
 Read-only: no SQL and no direct Postgres connection; uses Prometheus (postgresql receiver + span metrics)
-and docker inspect. Registered in agent/observe.py via TOOLS.update(TOOLS_DB)."""
+and docker inspect. Registered in agent/tools/observe.py via TOOLS.update(TOOLS_DB)."""
 from datetime import datetime, timezone
 
 from agent.evidence import Ledger

@@ -1,6 +1,6 @@
 """Rule-based alerting on span metrics + container state (no LLM). Mirrors an error-rate / latency alert."""
 import time
-from agent import observe
+from agent.tools import observe
 from agent.tools import containers
 
 ERR_THRESHOLD = 0.05        # 5% server errors

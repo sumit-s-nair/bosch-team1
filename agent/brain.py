@@ -3,7 +3,8 @@ import json
 import re
 import time
 
-from agent import llm, observe
+from agent import llm
+from agent.tools import observe
 from agent.evidence import Ledger
 from agent.schema import validate_output
 

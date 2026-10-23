@@ -1,7 +1,8 @@
 """Every known route by which feature-flag state could reach the model must be blocked."""
 import pytest
 
-from agent import flagguard, observe
+from agent import flagguard
+from agent.tools import observe
 from agent.evidence import Ledger
 from agent.tools import http, logs, traces
 

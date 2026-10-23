@@ -76,11 +76,11 @@ Each run writes `runs/<timestamp>/diagnosis.json` (summary, root cause, confiden
 ## How it works
 1. **Detect** (`agent/detector.py`) — rule-based: server error rate > 5%, p95 > 3x baseline, traffic drop, container stopped/unhealthy; must hold for 2 polls.
 2. **Sweep** — always runs service overview, container health and recent restarts first.
-3. **Investigate** (`agent/brain.py`) — Qwen picks up to 6 follow-up tools from `agent/observe.py`. Tools return short summaries computed in code, each fact tagged with an evidence id `[E#]`.
+3. **Investigate** (`agent/brain.py`) — Qwen picks up to 6 follow-up tools from `agent/tools/observe.py`. Tools return short summaries computed in code, each fact tagged with an evidence id `[E#]`.
 4. **Diagnose** — the model returns JSON: root cause, category, confidence, cited evidence ids.
 5. **Validate** — the JSON is schema-checked (one retry). Cited ids not produced by a tool are dropped. Confidence is capped if evidence is missing, if none of it is abnormal by code thresholds, or if it doesn't mention the blamed service. Below 0.7 the agent escalates; with no alert and nothing abnormal it reports `no_incident`.
 
-## Tools (`agent/observe.py`)
+## Tools (`agent/tools/observe.py`)
 | Tool | What it answers |
 |---|---|
 | `service_overview` | Request rate, error % and p95 per service vs baseline; services that went silent; optional route/client breakdown |
@@ -99,7 +99,7 @@ agent/
   config.py              endpoints + LLM settings (.env)
   tools/                 raw read-only clients: Prometheus, Jaeger (v3/legacy), OpenSearch, docker
   tools/observe_db.py    db_health tool (Postgres astronomy-db), merged into observe.TOOLS
-  observe.py             LLM-facing tools with summaries and evidence ids
+  tools/observe.py       LLM-facing tools with summaries and evidence ids
   evidence.py            evidence ledger
   flagguard.py           keeps feature-flag data (flagd spans/logs, flag UI, flag mentions) away from the model
   detector.py            alert rules

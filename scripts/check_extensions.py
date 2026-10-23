@@ -2,7 +2,7 @@
 import argparse
 import json
 from pathlib import Path
-from agent import observe
+from agent.tools import observe
 from agent.tools import metric_details
 from agent.evidence import Ledger
 
