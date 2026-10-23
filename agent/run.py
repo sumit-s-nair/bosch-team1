@@ -31,6 +31,8 @@ def main():
 
     print("\n================ DIAGNOSIS ================")
     print("Summary:   ", diag.get("summary"))
+    for s in diag.get("symptoms", []):
+        print("  symptom:", s)
     rc = diag.get("root_cause", {})
     print("Root cause:", rc.get("service"), "/", rc.get("category"), "-", rc.get("description"))
     print("Confidence:", diag["confidence"], "-> decision:", diag["decision"])

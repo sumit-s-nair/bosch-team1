@@ -30,6 +30,16 @@ def fields():
     return output
 
 
+@lru_cache(maxsize=1)
+def time_field():
+    """Timestamp field to filter/sort on (the demo's log index uses observedTimestamp, not @timestamp)."""
+    explicit = config.setting('LOGS_TIME_FIELD')
+    if explicit:
+        return explicit
+    caps = field_caps()
+    return next((f for f in ('@timestamp', 'observedTimestamp', 'time', 'timestamp') if f in caps), '@timestamp')
+
+
 def value_at(doc, path):
     if path in doc:
         return doc[path]
@@ -49,7 +59,8 @@ def search_logs(service=None, min_severity=None, text=None, minutes=15, size=30)
     """Normalised recent logs. min_severity uses OTel numbers: 9 INFO, 13 WARN, 17 ERROR, 21 FATAL."""
     service_field, level_field, body_field = fields()
     number_field = config.setting('LOGS_SEVERITY_NUMBER_FIELD', 'severity.number')
-    must = [{'range': {'@timestamp': {'gte': f'now-{max(1, min(int(minutes), 1440))}m'}}}]
+    tf = time_field()
+    must = [{'range': {tf: {'gte': f'now-{max(1, min(int(minutes), 1440))}m'}}}]
     if service:
         must.append({'match_phrase': {service_field: service}})
     if min_severity:
@@ -57,7 +68,7 @@ def search_logs(service=None, min_severity=None, text=None, minutes=15, size=30)
     if text:
         must.append({'match_phrase': {body_field: text}})
     must_not = [{'match_phrase': {service_field: s}} for s in NOISE_SERVICES]
-    query = {'size': max(1, min(int(size), 200)), 'sort': [{'@timestamp': 'desc'}],
+    query = {'size': max(1, min(int(size), 200)), 'sort': [{tf: {'order': 'desc', 'unmapped_type': 'date'}}],
              'query': {'bool': {'must': must, 'must_not': must_not}}}
     hits = http.post(f'{config.opensearch_url()}/{index()}/_search', query).get('hits', {}).get('hits', [])
     out = []
@@ -66,7 +77,7 @@ def search_logs(service=None, min_severity=None, text=None, minutes=15, size=30)
         svc = value_at(src, service_field)
         if service and svc != service:   # text fields tokenize hyphenated names; keep exact matches only
             continue
-        out.append({'id': hit.get('_id'), 'ts': src.get('@timestamp'), 'service': svc,
+        out.append({'id': hit.get('_id'), 'ts': value_at(src, tf), 'service': svc,
                     'severity': value_at(src, level_field), 'body': str(value_at(src, body_field))[:400],
                     'trace_id': src.get('traceId') or src.get('traceID') or src.get('trace_id')})
     return out

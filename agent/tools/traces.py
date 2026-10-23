@@ -99,7 +99,8 @@ def _legacy_spans(traces: list) -> list:
 
 
 # ---------- queries ----------
-def find_spans(service: str, minutes: int = 10, limit: int = 30, error_only: bool = False) -> list:
+def find_spans(service: str, minutes: int = 10, limit: int = 30, error_only: bool = False,
+               operation: str | None = None) -> list:
     """Spans from recent traces that touched `service` (all services in those traces are included)."""
     flavour, base = _api()
     if flavour == "v3":
@@ -107,6 +108,8 @@ def find_spans(service: str, minutes: int = 10, limit: int = 30, error_only: boo
         fmt = lambda t: time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t))
         params = {"query.service_name": service, "query.start_time_min": fmt(now - minutes * 60),
                   "query.start_time_max": fmt(now + 5), "query.num_traces": limit}
+        if operation:
+            params["query.operation_name"] = operation
         if error_only:
             params["query.attributes"] = '{"error":"true"}'
         try:
@@ -117,6 +120,8 @@ def find_spans(service: str, minutes: int = 10, limit: int = 30, error_only: boo
             raise
     else:
         params = {"service": service, "lookback": f"{minutes}m", "limit": limit}
+        if operation:
+            params["operation"] = operation
         if error_only:
             params["tags"] = '{"error":"true"}'
         spans = _legacy_spans(http.get(f"{base}/api/traces", params).get("data") or [])

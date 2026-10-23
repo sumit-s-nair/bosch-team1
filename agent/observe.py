@@ -122,11 +122,18 @@ def service_operations(L: Ledger, service: str) -> str:
 
 
 # ------------------------------------------------------------------ traces
-def trace_errors(L: Ledger, service: str, minutes: int = 5) -> str:
-    """Sample recent traces through `service`; group error spans and find the deepest failing span (likely origin)."""
-    spans = traces.find_spans(service, minutes=minutes, limit=40)
+def trace_errors(L: Ledger, service: str, operation: str | None = None, minutes: int = 5) -> str:
+    """Sample recent traces through `service`; group error spans and find the deepest failing span (likely origin).
+    Rare failures (e.g. ~10% of ad requests, only EmptyCart) can miss a plain sample, so error traces are fetched too."""
+    spans = traces.find_spans(service, minutes=minutes, limit=100, operation=operation)
+    try:
+        spans += traces.find_spans(service, minutes=minutes, limit=30, error_only=True, operation=operation)
+    except Exception:
+        pass   # error filter unsupported by this Jaeger; the plain sample still stands
+    spans = list({(s["trace_id"], s["span_id"]): s for s in spans}.values())   # drop duplicates across both samples
+    scope = f"{service}{' / ' + operation if operation else ''}"
     if not spans:
-        return f"No traces found for '{service}' in the last {minutes}m."
+        return f"No traces found for '{scope}' in the last {minutes}m."
     by_trace = defaultdict(list)
     for s in spans:
         by_trace[s["trace_id"]].append(s)
@@ -148,7 +155,11 @@ def trace_errors(L: Ledger, service: str, minutes: int = 5) -> str:
                 origins[key] += 1
                 samples.setdefault(key, (tid, s))
     slow = sorted(spans, key=lambda s: s["duration_ms"], reverse=True)[:3]
-    lines = [f"{n_traces} traces through {service} in last {minutes}m, {err_traces} contain errors."]
+    lines = [f"{n_traces} traces through {scope} in last {minutes}m, {err_traces} contain errors."]
+    if not err_traces:
+        lines.append("No errors in this sample, which does NOT mean there are none: errors may be rare. "
+                     "Check service_operations for an operation with err > 0 and call trace_errors with that operation, "
+                     "and check error_logs.")
     for (svc, name, msg), c in origins.most_common(5):
         tid, s = samples[(svc, name, msg)]
         eid = L.add("trace", f"error origin {svc} '{name}': {msg} (seen in {c} traces, e.g. trace {tid})",
@@ -279,7 +290,7 @@ def cache_health(L: Ledger) -> str:
 TOOLS = {
     "service_overview": (service_overview, "All services: request rate, error % and p95 latency now vs baseline. Call first.", {}),
     "service_operations": (service_operations, "Per-operation error % and latency for ONE service, incl. its outgoing calls to dependencies.", {"service": "string"}),
-    "trace_errors": (trace_errors, "Sample recent traces through a service and find which downstream span the errors originate from.", {"service": "string"}),
+    "trace_errors": (trace_errors, "Sample recent traces through a service (optionally one operation from service_operations) and find which downstream span the errors originate from.", {"service": "string", "operation": "string?"}),
     "error_logs": (error_logs, "Recent WARN/ERROR log lines grouped by message. Optional service filter.", {"service": "string?"}),
     "container_health": (container_health, "Docker state of all containers: stopped, restarting, OOM, recently restarted, CPU/memory pressure.", {}),
     "resource_usage": (resource_usage, "Top containers by CPU and memory right now.", {}),
