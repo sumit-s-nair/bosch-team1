@@ -54,7 +54,7 @@ flowchart LR
 | **Detector** | Raises an alert when error rate, latency, traffic or container health crosses a threshold. |
 | **Sweep** | A fixed first look at services, containers and restarts before digging deeper. |
 | **LLM investigation loop** | The local LLM (Qwen3 8B) picks which tool to call next based on what it has found so far. |
-| **Read-only tools** | Return short summaries of traces, metrics, logs, container health, the Valkey cache and the Postgres database (`db_health`: down vs slow/lock contention behind product-catalog), each fact tagged with an evidence ID. |
+| **Read-only tools** | Return short summaries of metrics, traces, logs, container health, the Valkey cache, the Postgres database (`db_health`: down vs slow/lock contention behind product-catalog), network latency between services, error breakdown by attribute, single-trace and trace-log lookup, and the Kafka queue, each fact tagged with an evidence ID. |
 | **Evidence validator** | Checks that cited evidence is real, that quoted values match, and lowers confidence when data is missing. |
 | **Escalate to human** | When confidence is low, hands over the findings instead of guessing. |
 | **Propose fix + rollback** | Picks an allowlisted runbook action and an undo plan. |
