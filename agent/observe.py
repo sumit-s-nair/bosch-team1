@@ -1,6 +1,8 @@
 """LLM-facing investigation tools. Each returns a SHORT text summary with evidence ids [E#].
 Numbers are computed here in code; the model only reads the conclusions."""
 import time
+import json
+from functools import wraps
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
 
@@ -8,7 +10,7 @@ import re
 
 from agent import flagguard
 from agent.evidence import Ledger
-from agent.tools import containers, logs, metrics, traces
+from agent.tools import containers, logs, metrics, traces, metric_details
 
 NOW = "2m"                      # current window
 BASE = "15m offset 20m"         # baseline window (before a fresh incident)
@@ -24,14 +26,25 @@ MEM_GROWTH_Q = "deriv(container_memory_usage_total_bytes[5m]) * 60 / 1048576"  #
 MEM_TTL_Q = ("(container_memory_usage_limit_bytes - container_memory_usage_total_bytes)"
              " / (deriv(container_memory_usage_total_bytes[5m]) * 60) and deriv(container_memory_usage_total_bytes[5m]) > 0")
 LEAK_TTL_MIN = 30
+MEMORY_GROWTH_THRESHOLD_PCT = 20.0  # Plain growth hint, not a diagnosis.
+TRAFFIC_SPIKE_RATIO = 3.0  # Plain volume hint, not a diagnosis.
 NOT_A_CULPRIT_FOR_RESOURCES = {"load-generator"}   # synthetic traffic source; its own memory/CPU is not an incident
+# CPU starvation: usage as % of the container's OWN cpu limit (docker --cpus), and CFS throttling ratio
+CPU_LIMIT_HOT_PCT = 85
+THROTTLE_HOT = 0.20
+THROTTLE_Q = ("rate(container_cpu_throttling_data_throttled_periods_total[2m])"
+              " / rate(container_cpu_throttling_data_periods_total[2m])")
+# a service is "silent" when it had at least this much traffic before and now reports < 10% of it
+SILENT_MIN_BASE_RPS = 0.05
 
 
 
-def _byservice(q: str, label="service_name") -> dict:
+def _byservice(q: str, label="service_name", strict=False) -> dict:
     try:
         return {r["metric"].get(label, "?"): r["value"] for r in metrics.promql(q) if r["value"] is not None}
     except Exception:
+        if strict:
+            raise
         return {}
 
 
@@ -44,14 +57,17 @@ def _fmt_ms(x):
 
 
 # ------------------------------------------------------------------ service health
-def service_health_raw() -> dict:
+def service_health_raw(window=None, strict=False) -> dict:
     """Numbers per service. Used by both the detector and the LLM tool."""
     rate = lambda w, extra="": f'sum by (service_name)(rate(traces_span_metrics_calls_total{{{SERVER}{extra}}}[{w}]))'
     p95 = lambda w: (f'histogram_quantile(0.95, sum by (service_name, le)'
                      f'(rate(traces_span_metrics_duration_milliseconds_bucket{{{SERVER}}}[{w}])))')
-    rps, erps = _byservice(rate(NOW)), _byservice(rate(NOW, "," + ERR))
-    brps, berps = _byservice(rate(BASE)), _byservice(rate(BASE, "," + ERR))
-    lat, blat = _byservice(p95(NOW)), _byservice(p95(BASE))
+    current = window or NOW
+    baseline = f"1h offset {window}" if window else BASE
+    query = lambda q: _byservice(q, strict=strict)
+    rps, erps = query(rate(current)), query(rate(current, "," + ERR))
+    brps, berps = query(rate(baseline)), query(rate(baseline, "," + ERR))
+    lat, blat = query(p95(current)), query(p95(baseline))
     out = {}
     for s in set(rps) | set(brps):
         if s in DEMO_SERVICES_SKIP:
@@ -66,9 +82,30 @@ def service_health_raw() -> dict:
     return out
 
 
-def service_overview(L: Ledger) -> str:
+def _bounded_tool(fn):
+    @wraps(fn)
+    def call(*args, **kwargs):
+        try:
+            result = fn(*args, **kwargs)
+            return metric_details.compact(result) if isinstance(result, dict) else result[:2500]
+        except Exception as exc:
+            return {"error": f"{type(exc).__name__}: {str(exc)[:400]}"}
+    return call
+
+
+@_bounded_tool
+def service_overview(L: Ledger, window="5m", service=None, group_by=None):
     """All services: request rate, error rate and p95 latency now vs baseline. Anomalies first."""
-    h = service_health_raw()
+    metric_details.window_ok(window)
+    if group_by is not None:
+        result = metric_details.traffic(service, group_by, window, TRAFFIC_SPIKE_RATIO)
+        for item in result['items']:
+            detail = f"{item['service']} {group_by} {item[group_by]}: {item['rate_per_s']} rps, baseline={item['baseline_rate_per_s']}, ratio={item['ratio']}"
+            item['evidence_id'] = L.add('metric', detail, ref=f"{result['metric']}:{item[group_by]}", value=dict(item), anomalous=False)
+        return result
+    h = service_health_raw(window=window, strict=True)
+    if service is not None:
+        h = {name: values for name, values in h.items() if name == service}
     if not h:
         return "No span metrics returned from Prometheus."
     rows = []
@@ -83,7 +120,7 @@ def service_overview(L: Ledger) -> str:
         rows.append((score, s, v))
     rows.sort(reverse=True)
     lines = ["service | rps (base) | error% (base) | p95 (base) | evidence"]
-    for score, s, v in rows:
+    for score, s, v in rows[:10]:
         anom = score >= 0.5 or (v["err_rate"] or 0) >= 0.05
         eid = L.add("metric", f"{s}: rps={v['rps']:.2f} err={_fmt_pct(v['err_rate'])} "
                     f"p95={_fmt_ms(v['p95_ms'])} (baseline err={_fmt_pct(v['base_err_rate'])}, "
@@ -92,7 +129,27 @@ def service_overview(L: Ledger) -> str:
         lines.append(f"{s} | {v['rps']:.2f} ({(v['base_rps'] or 0):.2f}) | {_fmt_pct(v['err_rate'])} "
                      f"({_fmt_pct(v['base_err_rate'])}) | {_fmt_ms(v['p95_ms'])} ({_fmt_ms(v['base_p95_ms'])}) "
                      f"| [{eid}]{flag}")
+    lines += silent_services(L, h)
     return "\n".join(lines)
+
+
+def silent_services(L: Ledger, h: dict | None = None) -> list[str]:
+    """Services that had traffic in the baseline but now report (almost) no spans: crashed, hung or cut off."""
+    h = h if h is not None else service_health_raw()
+    silent = {s: v for s, v in h.items()
+              if (v["base_rps"] or 0) >= SILENT_MIN_BASE_RPS and v["rps"] < 0.1 * v["base_rps"]}
+    if not silent:
+        return ["Silent services: none (every service that had traffic before still reports spans)."]
+    try:
+        state = {c["name"]: c["status"] for c in containers.list_containers()}
+    except Exception:
+        state = {}
+    out = ["Silent services (had traffic before, now little or none) - check container_health and their callers:"]
+    for s, v in sorted(silent.items()):
+        d = (f"{s} went SILENT: {v['rps']:.2f} rps now vs {v['base_rps']:.2f} rps baseline "
+             f"(container: {state.get(s, 'container not found')})")
+        out.append(f"- {d} [{L.add('metric', d, ref=f'span_metrics:{s}', value=v, anomalous=True)}]")
+    return out
 
 
 # ------------------------------------------------------------------ per-service operations
@@ -235,6 +292,7 @@ def container_health(L: Ledger) -> str:
     memp = _byservice("container_memory_percent_ratio", "container_name")
     grow = _byservice(MEM_GROWTH_Q, "container_name")
     ttl = _byservice(MEM_TTL_Q, "container_name")
+    throttled = _byservice(THROTTLE_Q, "container_name")
     now = datetime.now(timezone.utc)
     lines, healthy = [], 0
     for c in cs:
@@ -255,8 +313,17 @@ def container_health(L: Ledger) -> str:
             pass
         if "unhealthy" in c["status"]:
             issues.append("healthcheck UNHEALTHY")
-        if cpu.get(c["name"], 0) > CPU_HOT_PCT and c["name"] != "load-generator":
-            issues.append(f"CPU {cpu[c['name']]:.0f}% of a core")
+        name = c["name"]
+        limit, used = info.get("cpu_limit_cores"), cpu.get(name)   # used = % of ONE core
+        if limit and used is not None and name not in NOT_A_CULPRIT_FOR_RESOURCES:
+            of_limit = used / (limit * 100) * 100
+            if of_limit > CPU_LIMIT_HOT_PCT:
+                issues.append(f"CPU STARVED: using {of_limit:.0f}% of its {limit:g}-CPU limit ({used:.0f}% of a core)")
+        elif used is not None and used > CPU_HOT_PCT and name not in NOT_A_CULPRIT_FOR_RESOURCES:
+            issues.append(f"CPU {used:.0f}% of a core")
+        if throttled.get(name, 0) > THROTTLE_HOT and name not in NOT_A_CULPRIT_FOR_RESOURCES:
+            issues.append(f"CPU THROTTLED in {throttled[name]*100:.0f}% of scheduling periods"
+                          + (f" (limit {limit:g} CPU)" if limit else ""))
         if memp.get(c["name"], 0) > MEM_HOT_PCT:
             issues.append(f"memory {memp[c['name']]:.0f}% of limit")
         if ttl.get(c["name"], 1e9) < LEAK_TTL_MIN and c["name"] not in NOT_A_CULPRIT_FOR_RESOURCES:
@@ -271,25 +338,33 @@ def container_health(L: Ledger) -> str:
     return head + ("\n" + "\n".join(lines) if lines else "")
 
 
-def resource_usage(L: Ledger) -> str:
+@_bounded_tool
+def resource_usage(L: Ledger, service=None, window="10m"):
     """Top containers by CPU, memory (% of limit) and memory growth rate (leak signal)."""
-    cpu = _byservice("container_cpu_utilization_ratio", "container_name")
-    memp = _byservice("container_memory_percent_ratio", "container_name")
-    grow = _byservice(MEM_GROWTH_Q, "container_name")
+    metric_details.window_ok(window)
+    cpu = _byservice("container_cpu_utilization_ratio", "container_name", strict=True)
+    memp = _byservice("container_memory_percent_ratio", "container_name", strict=True)
+    grow = _byservice(MEM_GROWTH_Q, "container_name", strict=True)
     lines = ["Top CPU (% of one core):"]
     for n, v in sorted(cpu.items(), key=lambda x: -x[1])[:5]:
         lines.append(f"- {n}: {v:.0f}% [{L.add('metric', f'{n} cpu={v:.0f}% of a core', ref=f'container_cpu:{n}')}]")
     lines.append("Top memory (% of container limit):")
     for n, v in sorted(memp.items(), key=lambda x: -x[1])[:5]:
         lines.append(f"- {n}: {v:.0f}% [{L.add('metric', f'{n} mem={v:.0f}% of limit', ref=f'container_mem:{n}')}]")
-    ttl = _byservice(MEM_TTL_Q, "container_name")
+    ttl = _byservice(MEM_TTL_Q, "container_name", strict=True)
     lines.append("Fastest memory growth (MB/min over 5m; minutes until limit):")
     for n, v in sorted(grow.items(), key=lambda x: -x[1])[:3]:
         t = ttl.get(n)
         leak = t is not None and t < LEAK_TTL_MIN and n not in NOT_A_CULPRIT_FOR_RESOURCES
         d = f"{n} memory growth {v:+.1f} MB/min, limit in {'~%.0f min' % t if t else 'n/a'}"
         lines.append(f"- {d}{'  <-- LEAK RISK' if leak else ''} [{L.add('metric', d, ref=f'container_mem_growth:{n}', anomalous=leak)}]")
-    return "\n".join(lines)
+    runtime = metric_details.runtime(service, window, MEMORY_GROWTH_THRESHOLD_PCT)
+    result = {"summary": "\n".join(lines), "runtime": runtime}
+    for kind in ('gc', 'heap', 'process_cpu'):
+        if kind in runtime:
+            value = runtime[kind]
+            value['evidence_id'] = L.add('metric', f"{service} runtime {kind}: {json.dumps(value)}", ref=value['metric'], value=dict(value), anomalous=False)
+    return result
 
 
 def recent_changes(L: Ledger, minutes: int = 30) -> str:
@@ -323,12 +398,15 @@ def cache_health(L: Ledger) -> str:
 
 
 TOOLS = {
-    "service_overview": (service_overview, "All services: request rate, error % and p95 latency now vs baseline. Call first.", {}),
+    "service_overview": (service_overview, "Service rates and latency; use group_by='route' or 'client' when request volume changes to locate the source. Also lists services that went silent. Call first.", {"window": "string?", "service": "string?", "group_by": "string?"}),
     "service_operations": (service_operations, "Per-operation error % and latency for ONE service, incl. its outgoing calls to dependencies.", {"service": "string"}),
     "trace_errors": (trace_errors, "Sample recent traces through a service (optionally one operation from service_operations) and find which downstream span the errors originate from.", {"service": "string", "operation": "string?"}),
     "error_logs": (error_logs, "Recent WARN/ERROR log lines grouped by message. Optional service filter.", {"service": "string?"}),
-    "container_health": (container_health, "Docker state of all containers: stopped, restarting, OOM, recently restarted, CPU/memory pressure.", {}),
-    "resource_usage": (resource_usage, "Top containers by CPU and memory right now.", {}),
+    "container_health": (container_health, "Docker state of all containers: stopped, restarting, OOM, recently restarted, CPU starved vs its own limit / throttled, memory pressure.", {}),
+    "resource_usage": (resource_usage, "Container resources; pass service to inspect discovered GC, heap and process CPU when CPU, memory or latency looks wrong.", {"service": "string?", "window": "string?"}),
     "recent_changes": (recent_changes, "Deployment history proxy: containers (re)started recently.", {}),
     "cache_health": (cache_health, "Health of the Valkey/Redis cache used by the cart service.", {}),
 }
+
+from agent.tools.observe_db import TOOLS_DB   # noqa: E402  (separate tool module)
+TOOLS.update(TOOLS_DB)

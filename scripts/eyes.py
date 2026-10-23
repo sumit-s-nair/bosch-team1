@@ -9,6 +9,7 @@ import time
 
 sys.path.insert(0, ".")
 from agent import detector, observe
+from agent.tools import observe_db
 from agent.evidence import Ledger
 
 L = Ledger()
@@ -40,6 +41,7 @@ show("container_health", observe.container_health)
 show("recent_changes", observe.recent_changes)
 show("resource_usage", observe.resource_usage)
 show("cache_health", observe.cache_health)
+show("db_health", observe_db.db_health)
 show(f"service_operations({focus})", observe.service_operations, focus)
 show(f"trace_errors({focus})", observe.trace_errors, focus)
 show("error_logs(all)", observe.error_logs)

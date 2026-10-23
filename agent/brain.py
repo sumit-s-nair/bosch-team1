@@ -10,7 +10,8 @@ from agent.schema import validate_output
 MAX_TOOL_STEPS = 6
 ACT_CONFIDENCE = 0.7
 CATEGORIES = ["service_error", "dependency_failure", "container_down", "resource_exhaustion",
-              "latency_or_network", "traffic_spike", "cache_unavailable", "unknown"]
+              "latency_or_network", "traffic_spike", "cache_unavailable", "database_unavailable",
+              "database_slow", "unknown"]
 
 SYSTEM = f"""You are an on-call SRE investigating a production incident in the OpenTelemetry Astronomy Shop
 (microservices: frontend, frontend-proxy, cart, checkout, payment, product-catalog, recommendation, ad,
@@ -21,6 +22,8 @@ Rules:
 - Find the ORIGIN of the failure, not just where it is visible: errors at the frontend usually come from a
   downstream service. Follow CLIENT calls and trace error origins down the call chain.
 - Check container health for stopped/restarting/OOM containers and resource pressure.
+- product-catalog depends on the Postgres database astronomy-db; if product-catalog errors or is slow, call db_health before blaming product-catalog.
+- If CPU, memory or latency looks wrong, check runtime metrics via resource_usage; if request volume changed, use service_overview with group_by.
 - Be efficient: call only the tools you need (max {MAX_TOOL_STEPS}). When you have enough, stop calling tools.
 - If evidence is weak or contradictory, say so: low confidence and escalate is a GOOD outcome.
 - An incident needs USER-FACING impact (errors, latency, traffic loss) or a broken container. If every service
@@ -52,6 +55,10 @@ def _tool_specs(services: list[str]) -> list[dict]:
         props, req = {}, []
         for p, t in params.items():
             props[p] = {"type": "string", "enum": services} if p == "service" else {"type": "string"}
+            if p == "group_by":
+                props[p] = {"type": "string", "enum": ["route", "client"], "description": "Use route/client breakdown when request volume changes"}
+            elif p == "window":
+                props[p]['description'] = "Positive Prometheus window such as 5m or 10m"
             if not t.endswith("?"):
                 req.append(p)
         specs.append({"type": "function", "function": {
@@ -70,6 +77,8 @@ def _run_tool(L: Ledger, name: str, args: dict) -> str:
         out = fn(L, **args)
     except Exception as e:
         out = f"Tool error: {type(e).__name__}: {e}"
+    if isinstance(out, dict):
+        return json.dumps(out, ensure_ascii=False)
     return out[:2500]
 
 
