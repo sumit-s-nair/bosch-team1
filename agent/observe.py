@@ -4,6 +4,9 @@ import time
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
 
+import re
+
+from agent import flagguard
 from agent.evidence import Ledger
 from agent.tools import containers, logs, metrics, traces
 
@@ -105,7 +108,7 @@ def service_operations(L: Ledger, service: str) -> str:
     rows = []
     for r in tot:
         k = (r["metric"]["span_name"], r["metric"]["span_kind"])
-        if not r["value"] or r["value"] <= 0:
+        if not r["value"] or r["value"] <= 0 or flagguard.is_flag_text(k[0]):
             continue
         e = err.get(k, 0.0) / r["value"]
         rows.append((e, p95.get(k) or 0, k, r["value"]))
@@ -131,6 +134,7 @@ def trace_errors(L: Ledger, service: str, operation: str | None = None, minutes:
     except Exception:
         pass   # error filter unsupported by this Jaeger; the plain sample still stands
     spans = list({(s["trace_id"], s["span_id"]): s for s in spans}.values())   # drop duplicates across both samples
+    spans = [dict(s, message=flagguard.scrub(s["message"])) for s in spans if not flagguard.is_flag_span(s)]
     scope = f"{service}{' / ' + operation if operation else ''}"
     if not spans:
         return f"No traces found for '{scope}' in the last {minutes}m."
@@ -173,22 +177,53 @@ def trace_errors(L: Ledger, service: str, operation: str | None = None, minutes:
 
 
 # ------------------------------------------------------------------ logs
+ACCESS_RE = re.compile(r'"(?P<method>[A-Z]+) (?P<path>\S+) [^"]*" (?P<code>\d{3}) (?P<flags>\S+)')
+GATEWAY = "frontend-proxy"
+
+
+def _gateway_errors(minutes: int) -> list:
+    """Envoy access logs have no severity; parse status code / response flags from the body."""
+    out = []
+    for r in logs.search_logs(service=GATEWAY, minutes=minutes, size=200):
+        m = ACCESS_RE.search(r["body"])
+        if not m or flagguard.is_flag_path(m["path"]) or m["path"].startswith(("/jaeger", "/grafana", "/loadgen")):
+            continue
+        if m["code"].startswith("5") or m["code"] == "000" or m["flags"] not in ("-", ""):
+            path = re.sub(r"/[0-9A-Z]{6,}\b", "/{id}", m["path"].split("?")[0])
+            out.append((path, m["code"], m["flags"], r))
+    return out
+
+
 def error_logs(L: Ledger, service: str | None = None, minutes: int = 10) -> str:
-    """Recent WARN+ log lines, grouped by service and message."""
-    rows = logs.search_logs(service=service, min_severity=13, minutes=minutes, size=200)
-    if not rows:
-        return f"No WARN/ERROR logs{' for ' + service if service else ''} in the last {minutes}m."
-    groups = Counter()
-    sample = {}
-    for r in rows:
-        key = (r["service"], r["severity"], r["body"][:160])
-        groups[key] += 1
-        sample.setdefault(key, r)
-    lines = [f"{len(rows)} WARN+ log lines in last {minutes}m (top groups):"]
-    for (svc, sev, body), c in groups.most_common(8):
-        r = sample[(svc, sev, body)]
-        eid = L.add("log", f"{svc} {sev} x{c}: {body}", ref=f"log:{r['id']}", anomalous=True)
-        lines.append(f"- {svc} [{sev}] x{c}: {body} [{eid}]")
+    """Recent WARN+ log lines grouped by service and message, plus gateway (envoy) 5xx/upstream failures."""
+    rows = [r for r in logs.search_logs(service=service, min_severity=13, minutes=minutes, size=200)
+            if not flagguard.is_flag_service(r["service"])]
+    lines = []
+    if rows:
+        groups, sample = Counter(), {}
+        for r in rows:
+            key = (r["service"], r["severity"], flagguard.scrub(r["body"][:160]))
+            groups[key] += 1
+            sample.setdefault(key, r)
+        lines.append(f"{len(rows)} WARN+ log lines in last {minutes}m (top groups):")
+        for (svc, sev, body), c in groups.most_common(8):
+            r = sample[(svc, sev, body)]
+            eid = L.add("log", f"{svc} {sev} x{c}: {body}", ref=f"log:{r['id']}", anomalous=True)
+            lines.append(f"- {svc} [{sev}] x{c}: {body} [{eid}]")
+    if service in (None, GATEWAY):
+        gw = _gateway_errors(minutes)
+        if gw:
+            groups = Counter((p, c, f) for p, c, f, _ in gw)
+            first = {}
+            for p, c, f, r in gw:
+                first.setdefault((p, c, f), r)
+            lines.append(f"Gateway ({GATEWAY}) failed requests in last {minutes}m:")
+            for (p, c, f), n in groups.most_common(6):
+                eid = L.add("log", f"{GATEWAY} access log: {p} -> HTTP {c} flags={f} x{n}",
+                            ref=f"log:{first[(p, c, f)]['id']}", anomalous=True)
+                lines.append(f"- {p} -> HTTP {c} (envoy flags {f}) x{n} [{eid}]")
+    if not lines:
+        return f"No WARN/ERROR logs{' for ' + service if service else ''} and no gateway errors in the last {minutes}m."
     return "\n".join(lines)
 
 

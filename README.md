@@ -62,6 +62,7 @@ python -m scripts.check_setup        # containers, Prometheus, Jaeger, OpenSearc
 python -m scripts.check_setup --skip-llm   # telemetry only
 python -m scripts.discover           # optional: metric names, Jaeger API flavour, log field mapping -> runs/discovery.json
 python -m scripts.eyes [service]     # run every investigation tool without the LLM (what the agent sees)
+python -m scripts.logs_check 10      # which services send logs, with what severity, and with trace ids
 ```
 Log field names are auto-discovered from OpenSearch; override with `LOGS_*_FIELD` in `.env` if discovery fails.
 
@@ -86,6 +87,7 @@ agent/
   tools/                 raw read-only clients: Prometheus, Jaeger (v3/legacy), OpenSearch, docker
   observe.py             LLM-facing tools with summaries and evidence ids
   evidence.py            evidence ledger
+  flagguard.py           keeps feature-flag data (flagd spans/logs, flag UI, flag mentions) away from the model
   detector.py            alert rules
   llm.py                 Ollama /api/chat client
   brain.py               investigation loop + validation
@@ -100,5 +102,6 @@ docs/architecture.md     one-page architecture
 ## Safety
 - All telemetry tools are read-only: docker access is limited to `ps`/`inspect`/`stats`; HTTP POST is only allowed to OpenSearch `_search`; redirects are refused.
 - Any URL touching feature-flag sources (flagd, flag UI/API, ports 8013/8016) is refused in `agent/tools/http.py`.
+- `agent/flagguard.py` drops flagd's own spans and logs, client calls to flagd, flag-UI gateway access logs, and redacts any log or error text mentioning flags. `tests/test_flag_leaks.py` proves each route is blocked.
 - System changes only via the Action API and only after human approval (Day 2, WIP).
 

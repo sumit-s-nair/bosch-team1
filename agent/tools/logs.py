@@ -52,7 +52,8 @@ def value_at(doc, path):
     return None
 
 
-NOISE_SERVICES = ['otelcol-contrib', 'otel-collector']  # collector's own debug-exporter chatter
+# collector's own debug-exporter chatter, and flagd (its logs would reveal flag state)
+NOISE_SERVICES = ['otelcol-contrib', 'otel-collector', 'flagd', 'flagd-ui']
 
 
 def search_logs(service=None, min_severity=None, text=None, minutes=15, size=30):
