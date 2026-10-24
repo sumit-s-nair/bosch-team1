@@ -59,3 +59,10 @@ def selectors(settings, service):
     if settings['kind']:
         value += ',span_kind='+json.dumps(settings['kind'])
     return value
+
+
+def rng(window: str) -> str:
+    """Range-selector text for PromQL. '15m offset 20m' -> '[15m] offset 20m' (offset must sit OUTSIDE the
+    brackets; '[15m offset 20m]' is invalid and Prometheus rejects the whole query)."""
+    r, _, off = str(window).partition(" offset ")
+    return f"[{r.strip()}]" + (f" offset {off.strip()}" if off else "")

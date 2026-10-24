@@ -15,6 +15,8 @@ def _fake_promql(sc):
     S = sc["services"]
 
     def promql(q):
+        if re.search(r"\[[^\]]*offset", q):    # like real Prometheus: offset inside a range selector is a parse error
+            raise ValueError(f"bad_data: invalid PromQL (offset inside range selector): {q[:120]}")
         base = "offset" in q
         err = "STATUS_CODE_ERROR" in q
         if "traces_span_metrics" in q:

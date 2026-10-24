@@ -37,7 +37,7 @@ def _ms(x):
 
 def _p95(sel: str, window: str, by: str) -> dict:
     q = (f'histogram_quantile(0.95, sum by ({by}, le)'
-         f'(rate(traces_span_metrics_duration_milliseconds_bucket{{{sel}}}[{window}])))')
+         f'(rate(traces_span_metrics_duration_milliseconds_bucket{{{sel}}}{metrics.rng(window)})))')
     out = {}
     for r in metrics.promql(q):
         if _ok(r["value"]):

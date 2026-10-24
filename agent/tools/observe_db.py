@@ -142,7 +142,7 @@ def db_health(L: Ledger) -> str:
             d += f" - NEW exclusive locks: {', '.join(new_excl)}" if new_excl else ""
             lock_lines.append(f"{d} [{add(d, bool(new_excl), now)}]")
     if pg["postgresql_rollbacks"]:
-        rb, brb = _sum(f"sum(rate({pg['postgresql_rollbacks']}[{NOW}]))"), _sum(f"sum(rate({pg['postgresql_rollbacks']}[{BASE}]))")
+        rb, brb = _sum(f"sum(rate({pg['postgresql_rollbacks']}[{NOW}]))"), _sum(f"sum(rate({pg['postgresql_rollbacks']}{metrics.rng(BASE)}))")
         if rb is not None:
             anom = rb > DB_ROLLBACK_MIN and rb > DB_ROLLBACK_RATIO * (brb or 0)
             d = f"rollbacks {rb:.2f}/s (baseline {(brb or 0):.2f}/s)"
@@ -151,7 +151,7 @@ def db_health(L: Ledger) -> str:
 
     # 5. query latency from span metrics (works without postgres metrics)
     client = f'span_kind="SPAN_KIND_CLIENT",service_name=~"{DB_CLIENT_SERVICES}"'
-    bucket = lambda sel, w, by: f"sum by ({by}, le)(rate(traces_span_metrics_duration_milliseconds_bucket{{{sel}}}[{w}]))"
+    bucket = lambda sel, w, by: f"sum by ({by}, le)(rate(traces_span_metrics_duration_milliseconds_bucket{{{sel}}}{metrics.rng(w)}))"
     p95q = lambda sel, w, by="service_name, span_name": f"histogram_quantile(0.95, {bucket(sel, w, by)})"
     calls = _by_span(f"sum by (service_name, span_name)(rate(traces_span_metrics_calls_total{{{client}}}[{NOW}]))")
     db_spans = [k for k, v in calls.items() if v > 0 and any(w in k[1].lower() for w in DB_SPAN_WORDS)]
