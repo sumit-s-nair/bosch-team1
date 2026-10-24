@@ -169,3 +169,43 @@ def test_cors_only_for_the_local_dashboard():
         assert bad.status_code == 200 and "Access-Control-Allow-Origin" not in bad.headers
     finally:
         srv.shutdown()
+
+
+def test_static_ui_is_served_and_confined():
+    from agent import server
+    hit = server.static_file("/")
+    assert hit and hit[0].startswith("text/html") and b"Incident Zero" in hit[1]
+    assert server.static_file("/style.css")[0].startswith("text/css")
+    assert server.static_file("/app.js")[0].startswith("text/javascript")
+    for bad in ("/../../.env", "/..%2f..%2f.env", "/../main.js", "/nope.html", "/../package.json"):
+        assert server.static_file(bad) is None
+
+
+def test_conversation_records_model_tools_and_human(monkeypatch):
+    model_says(monkeypatch, "payment", "container_down")
+    agent, seen = offline_agent("container_stopped"), []
+    server.handle(agent, "POST", "/api/run", {"mode": "now"})
+    browser(agent, {"approve": "yes", "name": "ruthu"}, seen)
+    code, body = server.handle(agent, "GET", f"/api/incidents/{agent.run_id}/conversation", {})
+    kinds = [c["kind"] for c in body["conversation"]]
+    assert code == 200 and body["timeline"]
+    for k in ("sweep", "prompt", "diagnosis", "validation", "question", "answer"):
+        assert k in kinds, k
+    answers = [c["text"] for c in body["conversation"] if c["kind"] == "answer"]
+    assert answers == ["yes", "ruthu"]
+    assert server.handle(agent, "GET", "/api/incidents/../x/conversation", {})[0] == 404
+    assert "flagd" not in json.dumps(body["conversation"]).lower()     # the model's view is flag-free, so is this
+
+
+def test_live_view_reports_errors_instead_of_failing(monkeypatch):
+    from agent import detector
+    from agent.tools import containers, observe
+    monkeypatch.setattr(server, "_live", {"at": 0.0, "data": None})
+    monkeypatch.setattr(detector, "check", lambda *a, **k: [{"type": "error_rate", "service": "cart", "value": 0.5, "baseline": 0}])
+    monkeypatch.setattr(observe, "service_health_raw", lambda *a, **k: {"cart": {"rps": 1.0, "err_rate": 0.5}})
+    def boom():
+        raise RuntimeError("docker down")
+    monkeypatch.setattr(containers, "list_containers", boom)
+    code, body = server.handle(server.Agent(root="runs"), "GET", "/api/live", {})
+    assert code == 200 and body["alerts"][0]["label"] == "error_rate:cart" and body["services"]["cart"]["rps"] == 1.0
+    assert body["containers"] == [] and "docker" in body["errors"][0]

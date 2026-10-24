@@ -9,11 +9,16 @@
   POST /api/answer {id, answer} answer it; the agent continues exactly as if the answer was typed in its terminal
   GET  /api/kill                kill-switch state, read from the Action API
   POST /api/kill   {on, by}     engage / release the Action API kill switch (token stays server-side)
+  GET  /api/incidents/<id>/conversation   the run's conversation: sweep, model tool calls + outputs, thinking,
+                                diagnosis, validation, every question to the human and the answer
+  GET  /api/live                what the detector sees right now + per-service numbers + containers (cached 15 s)
+  GET  /api/audit               the Action API audit log, newest first (read through the Action API)
 
 The approval gate stays in the agent: pipeline.run() asks through ask_fn and blocks until the human answers.
 The browser never calls the Action API and never sees ACTION_API_TOKEN; every fix goes
 UI -> agent server -> agent (approval record, audit, verify, rollback) -> Action API.
 Binds to 127.0.0.1 only; CORS allows the local dashboard (http://localhost:3000).
+Any other GET serves the desktop UI from ui/desktop/app (the Electron app loads http://127.0.0.1:8000/).
 """
 import json
 import os
@@ -31,6 +36,22 @@ from agent.incident import Incident
 
 RUN_ID_RE = re.compile(r"^\d{8}-\d{6}$")          # runs/<id> folders the pipeline creates
 ALLOWED_ORIGINS = {"http://localhost:3000", "http://127.0.0.1:3000"}
+UI_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "ui", "desktop", "app")
+UI_TYPES = {".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8",
+            ".js": "text/javascript; charset=utf-8", ".svg": "image/svg+xml", ".png": "image/png"}
+
+
+def static_file(path: str):
+    """(content_type, bytes) for a file under UI_DIR, or None. Never serves anything outside it."""
+    rel = "index.html" if path in ("", "/") else path.lstrip("/")
+    full = os.path.realpath(os.path.join(UI_DIR, rel))
+    if not full.startswith(os.path.realpath(UI_DIR) + os.sep) or not os.path.isfile(full):
+        return None
+    ctype = UI_TYPES.get(os.path.splitext(full)[1].lower())
+    if not ctype:
+        return None
+    with open(full, "rb") as f:
+        return ctype, f.read()
 
 
 def prompt_kind(prompt: str) -> str:
@@ -117,12 +138,46 @@ def _latest(d: str, base: str):
     return _read(os.path.join(d, f"{base}.json"))
 
 
-def _timeline(d: str) -> list:
+def _jsonl(path: str) -> list:
     try:
-        with open(os.path.join(d, "timeline.jsonl"), encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             return [json.loads(line) for line in f if line.strip()]
     except (OSError, ValueError):
         return []
+
+
+def _timeline(d: str) -> list:
+    return _jsonl(os.path.join(d, "timeline.jsonl"))
+
+
+# ------------------------------------------------------------------ live view (same read-only tools the agent uses)
+LIVE_TTL_S = 15
+_live = {"at": 0.0, "data": None}
+_live_lock = threading.Lock()
+
+
+def live() -> dict:
+    """Detector alerts, per-service numbers and container states right now. Cached so polling stays cheap."""
+    from agent import detector
+    from agent.tools import containers, observe
+    with _live_lock:
+        if _live["data"] and time.time() - _live["at"] < LIVE_TTL_S:
+            return _live["data"]
+        out = {"at": time.strftime("%H:%M:%S"), "alerts": [], "services": {}, "containers": [], "errors": []}
+        try:
+            out["alerts"] = [dict(a, label=detector.label(a)) for a in detector.check()]
+        except Exception as e:
+            out["errors"].append(f"detector: {type(e).__name__}: {str(e)[:160]}")
+        try:
+            out["services"] = observe.service_health_raw()
+        except Exception as e:
+            out["errors"].append(f"prometheus: {type(e).__name__}: {str(e)[:160]}")
+        try:
+            out["containers"] = containers.list_containers()
+        except Exception as e:
+            out["errors"].append(f"docker: {type(e).__name__}: {str(e)[:160]}")
+        _live.update(at=time.time(), data=out)
+        return out
 
 
 OUTCOME_STATUS = (("no incident", "No incident"), ("fixed and verified", "Resolved"), ("rolled back", "Rolled back"),
@@ -206,6 +261,16 @@ def handle(agent: Agent, method: str, path: str, body: dict) -> tuple[int, dict]
         return 200, health(agent)
     if method == "GET" and path == "/api/incidents":
         return 200, {"incidents": incidents(agent)}
+    if method == "GET" and path.startswith("/api/incidents/") and path.endswith("/conversation"):
+        run_id = path.split("/")[3]
+        if not RUN_ID_RE.match(run_id) or not os.path.isdir(os.path.join(agent.root, run_id)):
+            return 404, {"error": "no such incident"}
+        d = os.path.join(agent.root, run_id)
+        return 200, {"conversation": _jsonl(os.path.join(d, "conversation.jsonl")), "timeline": _timeline(d)}
+    if method == "GET" and path == "/api/live":
+        return 200, live()
+    if method == "GET" and path == "/api/audit":
+        return _action_api("GET", "/audit?limit=100")
     if method == "GET" and path.startswith("/api/incidents/"):
         run_id = path.rsplit("/", 1)[1]
         if not RUN_ID_RE.match(run_id) or not os.path.isdir(os.path.join(agent.root, run_id)):
@@ -271,6 +336,16 @@ def make_handler(agent: Agent):
             self._send(*handle(agent, method, urlparse(self.path).path, body))
 
         def do_GET(self):
+            path = urlparse(self.path).path
+            if not path.startswith("/api/"):
+                hit = static_file(path)
+                if hit:
+                    self.send_response(200)
+                    self.send_header("Content-Type", hit[0])
+                    self.send_header("Content-Length", str(len(hit[1])))
+                    self.send_header("Cache-Control", "no-store")
+                    self.end_headers()
+                    return self.wfile.write(hit[1])
             self._do("GET")
 
         def do_POST(self):
@@ -286,5 +361,5 @@ def serve(host="127.0.0.1", port=8000, agent: Agent | None = None):
 if __name__ == "__main__":
     port = int(config.setting("AGENT_SERVER_PORT", "8000"))
     srv, _ = serve(port=port)
-    print(f"Agent server on http://127.0.0.1:{port}  (dashboard: cd ui/dashboard; pnpm dev)")
+    print(f"Agent server on http://127.0.0.1:{port}  (desktop: cd ui/desktop; npm start, or open the URL in a browser)")
     srv.serve_forever()
