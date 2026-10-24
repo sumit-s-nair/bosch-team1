@@ -345,9 +345,14 @@ def container_health(L: Ledger) -> str:
         info = st["info"].get(name) or containers.inspect(name)
         on_its_own = _individual_restart(name, starts, stack)
         issues = []
-        if not info.get("running"):
-            issues.append(f"NOT RUNNING (status={info['status']}, exit={info['exit_code']})")
-        if info.get("oom_killed"):
+        running = info.get("running")
+        if not running:
+            code = info.get("exit_code")
+            meaning = {0: "exited cleanly", 137: "killed by a signal (e.g. docker stop/kill)",
+                       143: "terminated by SIGTERM (e.g. docker stop)", 139: "crashed (segfault)"}.get(code, "exited with an error")
+            oom = "OOM-KILLED (out of memory)" if info.get("oom_killed") else "not OOM-killed"
+            issues.append(f"NOT RUNNING (status={info['status']}, exit={code}: {meaning}; {oom})")
+        elif info.get("oom_killed"):
             issues.append("OOM-KILLED")
         if info.get("restart_count") and on_its_own:
             issues.append(f"restarts={info['restart_count']}")
@@ -355,6 +360,10 @@ def container_health(L: Ledger) -> str:
             issues.append(f"restarted on its own {(now.timestamp() - starts[name]) / 60:.1f} min ago")
         if "unhealthy" in c["status"]:
             issues.append("healthcheck UNHEALTHY")
+        if not running:      # stale CPU/memory readings from before it stopped would mislead: report state only
+            eid = L.add("container", f"{name}: " + "; ".join(issues), ref=f"container:{name}", value=info, anomalous=True)
+            lines.append(f"- {name}: {'; '.join(issues)} [{eid}]")
+            continue
         limit, used = info.get("cpu_limit_cores"), cpu.get(name)   # used = % of ONE core
         if limit and used is not None and name not in NOT_A_CULPRIT_FOR_RESOURCES:
             of_limit = used / (limit * 100) * 100

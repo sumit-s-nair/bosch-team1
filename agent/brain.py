@@ -29,6 +29,8 @@ Rules:
 - If evidence is weak or contradictory, say so: low confidence and escalate is a GOOD outcome.
 - An incident needs USER-FACING impact (errors, latency, traffic loss) or a broken container. If every service
   looks healthy, say there is no incident (category "unknown", low confidence). Do not invent one.
+- A container that is NOT RUNNING and "not OOM-killed" was stopped or crashed: category container_down, not
+  resource_exhaustion. Only call it resource_exhaustion when the tools show OOM-KILLED or real CPU/memory pressure.
 - load-generator is the synthetic traffic source. Its own CPU/memory is normal; it is only a cause if it floods traffic.
 - Lines marked ANOMALY / LEAK RISK / issues in container_health are abnormal by code thresholds; everything else is normal.
 """
@@ -139,6 +141,15 @@ def investigate(alerts: list[dict], log=print, context: str = "") -> dict:
         trail.append({"tool": name, "args": {}, "by": "sweep"})
         sweep.append(f"### {name}\n{out}")
         log(f"[sweep] {name}\n{out}\n")
+    real_alerts = [a for a in alerts if a.get("type") != "manual"]
+    if not real_alerts and not any(i["anomalous"] for i in L.items.values()):
+        # manual page, and the fixed sweep found nothing abnormal: no need to spend model time
+        return {"summary": "No alert fired and the sweep found nothing abnormal.",
+                "root_cause": {"service": "none", "category": "unknown", "description": "no incident"},
+                "confidence": 0.0, "evidence": [], "decision": "no_incident",
+                "validation_notes": ["model not called: no alert and nothing abnormal in the sweep"],
+                "alerts": alerts, "tool_trail": trail, "investigation_seconds": round(time.time() - t0, 1),
+                "ledger": list(L.items.values())}
     messages = [
         {"role": "system", "content": SYSTEM},
         {"role": "user", "content": f"ALERT: {json.dumps(alerts)}\n\nInitial sweep:\n\n" + "\n\n".join(sweep) +

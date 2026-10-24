@@ -70,3 +70,22 @@ def test_no_leak_verdict_during_warmup(monkeypatch):
     L = Ledger()
     out = observe.container_health(L)
     assert "hits limit" not in out
+
+
+def test_stopped_container_shows_state_not_stale_memory(monkeypatch):
+    now = datetime.now(timezone.utc)
+    monkeypatch.setattr(containers, "list_containers", lambda: [{"name": "payment", "state": "exited", "status": "Exited (137)"}])
+    monkeypatch.setattr(containers, "inspect", lambda n: {
+        "running": False, "status": "exited", "restart_count": 0, "exit_code": 137, "oom_killed": False,
+        "started_at": (now - timedelta(minutes=90)).isoformat().replace("+00:00", "Z")})
+
+    def promql(q):   # stale series from before the stop
+        if "container_memory_usage_limit_bytes" in q:
+            return [{"metric": {"container_name": "payment"}, "value": 5.0}]
+        if "container_memory_percent_ratio" in q:
+            return [{"metric": {"container_name": "payment"}, "value": 86.0}]
+        return []
+    monkeypatch.setattr(metrics, "promql", promql)
+    out = observe.container_health(Ledger())
+    assert "not OOM-killed" in out and "killed by a signal" in out
+    assert "memory" not in out.replace("OOM", "")

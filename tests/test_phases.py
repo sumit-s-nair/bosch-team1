@@ -170,3 +170,11 @@ def test_failed_action_is_reported_as_not_applied(monkeypatch):
                         lambda self, p, by: {"status": "failed", "why": "Action API unreachable"})
     rep, _ = run(monkeypatch, "container_stopped", ["yes", "sumit"])
     assert rep["outcome"] == "fix not applied (Action API unreachable): escalated"
+
+
+def test_quiet_manual_page_does_not_call_the_model(monkeypatch):
+    def boom(*a, **k):
+        raise AssertionError("model must not be called when nothing is wrong")
+    monkeypatch.setattr(llm, "chat", boom)
+    rep, _ = run(monkeypatch, "healthy", [])
+    assert rep["outcome"] == "no incident found"
