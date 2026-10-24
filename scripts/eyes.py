@@ -8,7 +8,8 @@ import sys
 import time
 
 sys.path.insert(0, ".")
-from agent import detector, observe
+from agent import detector
+from agent.tools import observe
 from agent.tools import observe_db
 from agent.evidence import Ledger
 

@@ -149,7 +149,7 @@ flowchart LR
 | Detector | `agent/detector.py` | Rule-based alerts, 2 consecutive polls (1 if severe) | Done |
 | Raw clients | `agent/tools/` | Prometheus, Jaeger (v3/legacy), OpenSearch, docker `ps/inspect/stats`, read-only | Done |
 | Safe-read gateway | `agent/gateway.py` | Single door for all reads: flag filter, field scrubbing, docker and filesystem limits | Planned (priority 1) |
-| Investigation tools | `agent/observe.py` | 8 tools, summaries with `[E#]` ids; add deploy history | Done / deploy history planned |
+| Investigation tools | `agent/tools/observe.py` | 8 tools, summaries with `[E#]` ids; add deploy history | Done / deploy history planned |
 | Evidence ledger | `agent/evidence.py` | Every observed fact gets an id and a stored value | Done |
 | Brain | `agent/brain.py` | Sweep, LLM tool loop, JSON diagnosis, validation, act or escalate | Done |
 | Orchestrator | `agent/orchestrator.py` | State machine, loop after verify, approval ordering, timeline | Planned |

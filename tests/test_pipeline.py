@@ -3,7 +3,8 @@ import json
 
 import pytest
 
-from agent import brain, detector, llm, observe
+from agent import brain, detector, llm
+from agent.tools import observe
 from agent.evidence import Ledger
 from agent.schema import validate_output
 from agent.tools import containers, http, metrics, observe_db, traces

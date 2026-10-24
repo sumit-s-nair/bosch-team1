@@ -40,7 +40,16 @@ Day 1, Friday 23 Oct 2026. Bosch one-day AI hackathon at PES University: build a
 | Docs | `README.md`, `architecture.md`, `docs/architecture.md`, `docs/day1.md`, `docs/detailed architecture/architecture.md` |
 
 ## Verification so far
-- **14 investigation tools** built as of now, covering metrics, traces, logs, container health and recent changes.
+- **14 investigation tools** built as of now:
+
+| Area | Tools |
+|---|---|
+| Service health | `service_overview`, `service_operations` |
+| Traces | `trace_errors`, `error_breakdown`, `get_trace`, `dependency_latency` |
+| Logs | `error_logs`, `logs_for_trace` |
+| Containers and infrastructure | `container_health`, `resource_usage`, `recent_changes` |
+| Dependencies (cache, database, queue) | `cache_health`, `db_health`, `queue_health` |
+
 - **Telemetry and logs scraped from the OpenTelemetry demo** to see what the agent receives.
 - **Around 15 fault/incident scenarios are available.** We have run the agent on **3** of them, as asked.
 
