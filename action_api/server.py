@@ -34,10 +34,11 @@ ALLOWLIST = {
     "throttle_load_generator": {"params": {"users": "integer 0-50"}, "reversible": True,
                                 "check": lambda p: ex.check_throttle(p.get("users")),
                                 "run": lambda p: ex.throttle_load_generator(p["users"])},
-    "toggle_feature_flag": {"params": {"flag": "flag name", "state": "'off'"}, "reversible": True,
-                            "check": lambda p: ex.check_toggle(p.get("flag"), p.get("state")),
-                            "run": lambda p: ex.toggle_feature_flag(p["flag"], p.get("state", "off"),
-                                                                     p.get("_restore_variant"))},
+    "toggle_feature_flag": {"params": {"service": "service whose enabled features to turn off (or flag: one flag name)",
+                                       "state": "'off'"}, "reversible": True,
+                            "check": lambda p: ex.check_toggle(p),
+                            "preview": lambda p: ex.preview_toggle(p),
+                            "run": lambda p: ex.toggle_feature_flag(p)},
     "scale_service": {"params": {"service": "name", "replicas": "integer"}, "reversible": False,
                       "check": lambda p: ex.scale_service(p.get("service"), p.get("replicas")),
                       "run": lambda p: ex.scale_service(p.get("service"), p.get("replicas"))},
@@ -101,9 +102,14 @@ def handle(st: State, method: str, path: str, body: dict, query: dict) -> tuple[
             st.audit({**rec, "status": "refused", "why": str(e)})
             return 400, {"status": "refused", "why": str(e)}
         if path.endswith("dry-run"):
-            st.audit({**rec, "status": "dry_run"})
-            return 200, {"status": "dry_run", "would_do": f"{action}({', '.join(f'{k}={v}' for k, v in params.items())})",
-                         "reversible": entry["reversible"], "kill_switch": st.killed()}
+            try:
+                would = entry["preview"](params) if "preview" in entry else \
+                    f"{action}({', '.join(f'{k}={v}' for k, v in params.items())})"
+            except ex.ActionError as e:
+                st.audit({**rec, "status": "refused", "why": str(e)})
+                return 400, {"status": "refused", "why": str(e)}
+            st.audit({**rec, "status": "dry_run", "would_do": would})
+            return 200, {"status": "dry_run", "would_do": would, "reversible": entry["reversible"], "kill_switch": st.killed()}
         return execute(st, action, params, rec, entry)
 
     if method == "POST" and path == "/actions/undo":
@@ -113,7 +119,7 @@ def handle(st: State, method: str, path: str, body: dict, query: dict) -> tuple[
         if not u:
             st.audit({**rec, "status": "refused", "why": "nothing to undo for this call"})
             return 404, {"status": "refused", "why": "nothing to undo for this call"}
-        params = {**u["params"], **({"_restore_variant": u["_restore_variant"]} if "_restore_variant" in u else {})}
+        params = {**u["params"], **({"_restore": u["_restore"]} if "_restore" in u else {})}
         r = execute(st, u["action"], params, {**rec, "action": u["action"], "params": u["params"]},
                     ALLOWLIST[u["action"]], cooldown=False)
         if r[0] == 200:

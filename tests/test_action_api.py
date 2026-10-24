@@ -13,6 +13,12 @@ from action_api import executors as ex, server
 
 TOKEN = "test-token"
 FLAGS = {"cartFailure": {"state": "ENABLED", "variants": {"on": True, "off": False}, "defaultVariant": "on"},
+         "adHighCpu": {"description": "Triggers high cpu load in the ad service", "variants": {"on": True, "off": False}, "defaultVariant": "on"},
+         "adManualGc": {"description": "Triggers full manual garbage collections in the ad service", "variants": {"on": True, "off": False}, "defaultVariant": "on"},
+         "adFailure": {"description": "Fail ad service", "variants": {"on": True, "off": False}, "defaultVariant": "off"},
+         "loadGeneratorFloodHomepage": {"description": "Flood the frontend", "variants": {"on": 100, "off": 0}, "defaultVariant": "on"},
+         "readinessX": {"description": "readiness probe failure for cart service", "variants": {"on": True, "off": False}, "defaultVariant": "on"},
+         "emitRawPii": {"description": "Emit raw PII from cart. Not a failure scenario", "variants": {"on": True, "off": False}, "defaultVariant": "on"},
          "catalogBug": {"state": "ENABLED", "variants": {"on": True, "off": False}, "defaultVariant": "off",
                         "targeting": {"if": [{"in": ["X1", {"var": "product_id"}]}, "on", "off"]}}}
 
@@ -153,7 +159,7 @@ def test_flag_off_respects_targeting_and_never_returns_flag_contents(api, fake):
     assert code == 200 and fake["flags"]["catalogBug"]["targeting"]["if"][1] == "off"
     text = json.dumps(body)
     assert "variants" not in text and "targeting" not in text and "cartFailure" not in text
-    assert body["result"] == {"flag": "catalogBug", "state": "off"}
+    assert body["result"] == {"service": None, "flags": ["catalogBug"], "state": "off"}
 
 
 def test_flag_undo_restores_previous_variant(api, fake):
@@ -190,7 +196,7 @@ def test_agent_client_end_to_end(api, fake, tmp_path, monkeypatch):
     monkeypatch.setenv("ACTION_API_TOKEN", TOKEN)
     c = actions.ActionClient(Incident(str(tmp_path / "runs")))
     plan = {"action": "throttle_load_generator", "params": {"users": 5}, "reason": "traffic_spike"}
-    assert "dry run: dry_run" in c.preview(plan)
+    assert "refused" not in c.preview(plan) and c.dry_run(plan)["status"] == "dry_run"
     r = c.execute(plan, approved_by="sumit")
     assert r["status"] == "executed" and fake["users"] == 5
     assert c.undo(r["call_id"], approved_by="sumit")["status"] == "executed" and fake["users"] == 10
@@ -200,3 +206,27 @@ def test_agent_package_never_imports_action_api():
     for f in pathlib.Path("agent").rglob("*.py") if pathlib.Path("agent").exists() else []:
         text = f.read_text(encoding="utf-8")
         assert "import action_api" not in text and "from action_api" not in text, f
+
+
+
+def test_service_based_flag_off_turns_off_all_enabled_related_flags_only(api, fake):
+    code, body = api.call("POST", "/actions/dry-run", {"action": "toggle_feature_flag", "params": {"service": "ad", "state": "off"}})
+    assert code == 200 and "adHighCpu" in body["would_do"] and "adManualGc" in body["would_do"]
+    assert "adFailure" not in body["would_do"] and "loadGenerator" not in body["would_do"]     # off already / 'ad' != 'load'
+    code, body = api.call("POST", "/actions/execute", {"action": "toggle_feature_flag", "params": {"service": "ad", "state": "off"},
+                                                       "approval": APPROVED})
+    assert code == 200 and body["result"]["flags"] == ["adHighCpu", "adManualGc"]
+    assert fake["flags"]["adHighCpu"]["defaultVariant"] == "off" and fake["flags"]["adManualGc"]["defaultVariant"] == "off"
+    assert fake["flags"]["loadGeneratorFloodHomepage"]["defaultVariant"] == "on"
+    assert api.call("POST", "/actions/undo", {"call_id": body["call_id"], "approval": APPROVED})[0] == 200
+    assert fake["flags"]["adHighCpu"]["defaultVariant"] == "on" and fake["flags"]["adManualGc"]["defaultVariant"] == "on"
+
+
+def test_description_match_and_not_a_failure_flags_skipped(api, fake):
+    body = api.call("POST", "/actions/dry-run", {"action": "toggle_feature_flag", "params": {"service": "cart", "state": "off"}})[1]
+    assert "cartFailure" in body["would_do"] and "readinessX" in body["would_do"] and "emitRawPii" not in body["would_do"]
+
+
+def test_no_related_enabled_flag_is_refused_at_dry_run(api, fake):
+    code, body = api.call("POST", "/actions/dry-run", {"action": "toggle_feature_flag", "params": {"service": "payment", "state": "off"}})
+    assert code == 400 and "no enabled feature flags related to payment" in body["why"] and fake["writes"] == 0

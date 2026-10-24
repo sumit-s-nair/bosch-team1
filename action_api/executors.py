@@ -115,28 +115,83 @@ def _set_variant(flag: dict, variant: str) -> str:
     return prev
 
 
-def check_toggle(flag, state) -> None:
-    if not isinstance(flag, str) or not re.match(r"^[A-Za-z0-9_.-]{1,64}$", flag):
-        raise ActionError("invalid flag name")
+def _words(text: str) -> set:
+    """'productCatalogFailure' -> {product, catalog, failure}; 'readiness probe failure for cart service' -> words."""
+    spaced = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", str(text or ""))
+    return set(re.findall(r"[a-z0-9]+", spaced.lower()))
+
+
+def _current_variant(flag: dict):
+    cond = (flag.get("targeting") or {}).get("if")
+    return cond[1] if isinstance(cond, list) and len(cond) == 3 else flag.get("defaultVariant")
+
+
+def _is_on(flag: dict) -> bool:
+    off = _off_variant(flag)
+    return off is not None and _current_variant(flag) != off
+
+
+def _relates(name: str, flag: dict, service: str) -> bool:
+    """A flag relates to a service when every word of the service name appears in the flag's name or description
+    ('product-catalog' <- productCatalogFailure; 'cart' <- 'readiness probe failure for cart service').
+    Flags that describe themselves as not a failure scenario are left alone."""
+    desc = str(flag.get("description") or "")
+    if "not a failure" in desc.lower():
+        return False
+    want = set(re.findall(r"[a-z0-9]+", service.lower()))
+    return bool(want) and (want <= _words(name) or want <= _words(desc))
+
+
+def related_enabled_flags(service: str) -> list:
+    """Enabled (non-off) flags related to a service. Used only to carry out an approved fix."""
+    return sorted(n for n, f in _flags().items() if _is_on(f) and _relates(n, f, service))
+
+
+def check_toggle(params: dict) -> None:
+    flag, service, state = params.get("flag"), params.get("service"), params.get("state")
     if state not in ("off", "restore"):
         raise ActionError("state must be 'off' (restore happens through undo)")
+    if flag is not None and (not isinstance(flag, str) or not re.match(r"^[A-Za-z0-9_.-]{1,64}$", flag)):
+        raise ActionError("invalid flag name")
+    if flag is None and (not isinstance(service, str) or not NAME_RE.match(service)):
+        raise ActionError("give the service whose features should be turned off")
 
 
-def toggle_feature_flag(flag: str, state: str = "off", restore_variant: str | None = None) -> tuple:
-    check_toggle(flag, "restore" if restore_variant else state)
+def preview_toggle(params: dict) -> str:
+    if params.get("flag"):
+        return f"turn off flag {params['flag']}"
+    names = related_enabled_flags(params["service"])
+    if not names:
+        raise ActionError(f"no enabled feature flags related to {params['service']}")
+    return f"turn off {len(names)} enabled feature flag(s) related to {params['service']}: {', '.join(names)}"
+
+
+def toggle_feature_flag(params: dict) -> tuple:
+    """Turn off one named flag, or every enabled flag related to `service`. Undo restores the previous variants."""
     flags = _flags()
-    if flag not in flags:
-        raise ActionError("unknown flag name")              # deliberately does not list the flags that exist
-    target = restore_variant or _off_variant(flags[flag])
-    if not target or target not in (flags[flag].get("variants") or {}):
-        raise ActionError("flag has no 'off' variant")
-    prev = _set_variant(flags[flag], target)
+    restore = params.get("_restore") or {}
+    if restore:
+        targets = list(restore)
+    elif params.get("flag"):
+        if params["flag"] not in flags:
+            raise ActionError("unknown flag name")          # deliberately does not list the flags that exist
+        targets = [params["flag"]]
+    else:
+        targets = sorted(n for n, f in flags.items() if _is_on(f) and _relates(n, f, params["service"]))
+        if not targets:
+            raise ActionError(f"no enabled feature flags related to {params['service']}")
+    prev = {}
+    for name in targets:
+        variant = restore.get(name) or _off_variant(flags[name])
+        if not variant or variant not in (flags[name].get("variants") or {}):
+            raise ActionError(f"flag {name} has no 'off' variant")
+        prev[name] = _set_variant(flags[name], variant)
     r = _http_post(f"{DEMO_BASE}/feature/api/write", json={"data": {"flags": flags}})
     if not r.ok:
         raise ActionError(f"flag service refused the change: HTTP {r.status_code}")
-    # the previous variant stays inside the API (undo record); the caller only learns that the flag was changed
-    undo = {"action": "toggle_feature_flag", "params": {"flag": flag, "state": "restore"}, "_restore_variant": prev}
-    return {"flag": flag, "state": "restored" if restore_variant else "off"}, undo
+    undo = {"action": "toggle_feature_flag", "params": {"service": params.get("service"), "state": "restore"},
+            "_restore": prev}
+    return {"service": params.get("service"), "flags": targets, "state": "restored" if restore else "off"}, undo
 
 
 def scale_service(service: str, replicas: int) -> dict:
