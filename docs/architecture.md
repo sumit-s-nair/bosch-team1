@@ -12,7 +12,7 @@ flowchart TD
         FLAG[flagd and flag UI<br/>fault switches]
     end
 
-    OFF[(Offline scenarios<br/>15 fake backends for testing)]
+ 
 
     subgraph EYES["Layer 1: Eyes - read only"]
         GW["Flag guard on every read<br/>drops flagd spans and logs,<br/>scrubs flag text, docker limits"]
@@ -51,7 +51,7 @@ flowchart TD
     JAE --> GW
     OS --> GW
     DOCK --> GW
-    OFF -. tests only .-> GW
+  
     FLAG -. blocked .-x GW
 
     GW --> TOOLS
@@ -81,7 +81,7 @@ flowchart TD
     HAR -.-> REP
 
     classDef built fill:#d4edda,stroke:#2e7d32,color:#000
-    class GW,TOOLS,LEDGER,DET,SWEEP,LOOP,DIAG,VAL,ALLOW,PROP,DRY,APPROVE,KILL,ACT,VERIFY,RB,ESC,REP,TL,UI,HAR,OFF built
+    class GW,TOOLS,LEDGER,DET,SWEEP,LOOP,DIAG,VAL,ALLOW,PROP,DRY,APPROVE,KILL,ACT,VERIFY,RB,ESC,REP,TL,UI,HAR built
 ```
 
 ## Legend

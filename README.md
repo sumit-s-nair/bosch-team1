@@ -184,3 +184,15 @@ configured polls to be clean. Longer runs require three consecutive clean polls 
 Each dashboard question accepts one answer only; duplicate or stale answers return HTTP 409. The Action API
 rechecks its kill switch after acquiring the execution lock so an action waiting behind another cannot ignore a newly
 engaged stop. A kill switch prevents new actions; it does not cancel an executor operation already in progress.
+
+## Team Details
+
+1. Anagha Murugan
+2. Pranav Bhat
+3. Ruthu H Kumar
+4. Sanjana Shenoy Katrisal
+5. Sumit S Nair
+
+
+
+Thank you:)
