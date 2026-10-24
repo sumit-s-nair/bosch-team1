@@ -93,7 +93,7 @@ class Agent:
 
     def answer(self, pending_id: str, text: str) -> bool:
         with self.lock:
-            if not self.pending or self.pending["id"] != pending_id:
+            if not self.pending or self.pending["id"] != pending_id or self._event.is_set():
                 return False      # stale or unknown question: ignore, never apply it to a different one
             self._answer = str(text or "")
             self._event.set()

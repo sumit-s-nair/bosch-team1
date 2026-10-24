@@ -131,6 +131,10 @@ def execute(st, action, params, rec, entry, cooldown=True):
         st.audit({**rec, "status": "refused", "why": "kill switch on"})
         return 423, {"status": "refused", "why": "kill switch is on"}
     with st.lock:
+        # A request may have waited behind another action while STOP/the kill switch changed.
+        if st.killed():
+            st.audit({**rec, "status": "refused", "why": "kill switch on"})
+            return 423, {"status": "refused", "why": "kill switch is on"}
         now = time.time()
         while st.recent and now - st.recent[0] > 600:
             st.recent.popleft()

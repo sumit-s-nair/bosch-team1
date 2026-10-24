@@ -84,9 +84,13 @@ Four terminals, all from the repo root unless noted:
 python -m action_api.server                      # 1. Action API (the only thing that changes the demo)
 python -m agent.server                           # 2. agent server on http://127.0.0.1:8000
 cd ui/dashboard; copy .env.example .env.local    # 3. once
-npx pnpm@10 install                              #    once (or `pnpm install` if pnpm is installed)
-npx pnpm@10 dev                                  #    dashboard on http://localhost:3000
+npx pnpm@10.19.0 install --frozen-lockfile                              #    once (or `pnpm install` if pnpm is installed)
+npx pnpm@10.19.0 dev                                  #    dashboard on http://localhost:3000
 ```
+From `ui/dashboard`, run `pnpm typecheck` before the demo. Production builds enforce TypeScript errors.
+The project pins pnpm 10.19.0. Use `pnpm build`; if a restricted environment blocks Turbopack worker ports,
+`pnpm exec next build --webpack` is the supported alternative.
+
 Start a run from the dashboard (**Investigate now** / **Watch**). The terminal CLI (`python -m agent.run`)
 still works on its own, without the dashboard.
 
@@ -156,3 +160,14 @@ Traffic breakdowns in `service_overview(window="5m", service=None, group_by="rou
 `memory_growing` (>20% growth) and per-route `spike` (>3x baseline) are plain numerical hints, not incident conclusions. Values are returned with evidence IDs; list output is capped and can be shortened further to stay below roughly 3000 characters. The tool registry has nine tools (`db_health` added).
 
 To verify these extensions against the live demo, run `python -m scripts.check_extensions --service <exact-service-name>` (omit `--service` to discover a service emitting runtime metrics). It prints the actual metric-name list and raw tool outputs, and saves them under `runs/runtime-validation/`. This is a diagnostic script, not an additional agent tool.
+
+## Recovery and approval safeguards
+
+Recovery verification requires active request, error-rate and latency telemetry, a nonempty demo container inventory,
+and observations for the originally affected services or containers. Query failures, missing data and zero traffic
+leave recovery unverified. By default all three polls must be clean; explicit shorter offline runs require all their
+configured polls to be clean. Longer runs require three consecutive clean polls at the end.
+
+Each dashboard question accepts one answer only; duplicate or stale answers return HTTP 409. The Action API
+rechecks its kill switch after acquiring the execution lock so an action waiting behind another cannot ignore a newly
+engaged stop. A kill switch prevents new actions; it does not cancel an executor operation already in progress.
