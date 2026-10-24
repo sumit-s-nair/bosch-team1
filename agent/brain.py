@@ -29,6 +29,8 @@ Rules:
 - If evidence is weak or contradictory, say so: low confidence and escalate is a GOOD outcome.
 - An incident needs USER-FACING impact (errors, latency, traffic loss) or a broken container. If every service
   looks healthy, say there is no incident (category "unknown", low confidence). Do not invent one.
+- Categories: dependency_failure = something this service CALLS (database, cache, another service) is down or
+  unreachable. If the service's own operations fail while its dependencies are healthy, it is service_error.
 - A container that is NOT RUNNING and "not OOM-killed" was stopped or crashed: category container_down, not
   resource_exhaustion. Only call it resource_exhaustion when the tools show OOM-KILLED or real CPU/memory pressure.
 - load-generator is the synthetic traffic source. Its own CPU/memory is normal; it is only a cause if it floods traffic.

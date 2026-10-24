@@ -47,6 +47,16 @@ def run(mode="now", ask_fn=None, client_factory=None, validate_kw=None, on_execu
         if not p and diag["decision"] == "propose_fix" and tried:
             inc.event("investigate", "every fix the runbook offers for this was already tried: escalating")
             diag["decision"] = "escalate"
+        if p:   # the Action API's read-only dry run: if this fix is impossible (e.g. no related feature is on), try the other rung
+            check = client.dry_run(p)
+            if check.get("status") == "refused":
+                inc.event("investigate", f"{p['action']} {p['params']} not possible: {check.get('why')}")
+                alt = actions.fallback(p["action"], p["params"])
+                if alt and not any(actions._same(alt, t) for t in tried):
+                    p = {**p, "action": alt["action"], "params": alt["params"], "reason": alt["note"] + p["reason"]}
+                else:
+                    diag["decision"], p = "escalate", None
+                    diag.setdefault("validation_notes", []).append(f"no possible fix: {check.get('why')}")
         preview = client.preview(p) if p else None
         if p:
             inc.save(f"plan{sfx}.json", {**p, "dry_run_preview": preview})
@@ -87,10 +97,14 @@ def run(mode="now", ask_fn=None, client_factory=None, validate_kw=None, on_execu
                 if on_executed:
                     on_executed(p)
                 inc.event("validate", "re-checking alert signals")
-                validation = verify.recovered(alerts, **(validate_kw or {}))
+                target = p["params"].get("service") or (rc.get("service") if p["action"] != "throttle_load_generator" else None)
+                validation = verify.recovered(alerts, target=target, **(validate_kw or {}))
                 inc.save(f"validation{sfx}.json", validation)
-                inc.event("validate", "recovered" if validation["recovered"] else "NOT recovered")
-                if not validation["recovered"] and result.get("undo_available") and result.get("call_id"):
+                partial = not validation["recovered"] and validation.get("target_recovered")
+                inc.event("validate", "recovered" if validation["recovered"] else
+                          f"{target} recovered; other alerts remain: " + ", ".join(f"{a['type']}:{a['service']}" for a in validation["other_alerts"])
+                          if partial else "NOT recovered")
+                if not validation["recovered"] and not partial and result.get("undo_available") and result.get("call_id"):
                     # a rollback is a change too: it needs its own explicit approval
                     ans = ask_fn(f"Fix did not recover the system. Roll back {p['action']}? type 'yes' to roll back: ").strip().lower()
                     if ans == "yes":
@@ -111,9 +125,14 @@ def run(mode="now", ask_fn=None, client_factory=None, validate_kw=None, on_execu
             break
         # the fix ran but the system did not recover: look again, knowing what was tried
         alerts = detector.check() or alerts
-        context = (f"Round {rnd} diagnosed {rc.get('service')} / {rc.get('category')} and applied "
-                   f"{p['action']} {p['params']} (approved by a human). The system did NOT recover. "
-                   f"Do not assume that diagnosis was right; find what is still failing.")
+        if validation.get("target_recovered"):
+            context = (f"Round {rnd} fixed {rc.get('service')} ({rc.get('category')}) with {p['action']} {p['params']}; "
+                       f"that service is healthy now. Other alerts remain, which points to a SEPARATE fault: "
+                       f"investigate what is still failing, not {rc.get('service')}.")
+        else:
+            context = (f"Round {rnd} diagnosed {rc.get('service')} / {rc.get('category')} and applied "
+                       f"{p['action']} {p['params']} (approved by a human). The system did NOT recover. "
+                       f"Do not assume that diagnosis was right; find what is still failing.")
 
     # REPORT
     diag, p, appr, result, validation, rollback = final

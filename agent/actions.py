@@ -20,7 +20,7 @@ from agent import config
 ALLOWLIST = {
     "restart_service": {"params": ["service"], "desc": "Restart one service container"},
     "throttle_load_generator": {"params": ["users"], "desc": "Reduce load-generator users"},
-    "toggle_feature_flag": {"params": ["flag", "state"], "desc": "Turn a feature flag on/off (human must name the flag)"},
+    "toggle_feature_flag": {"params": ["service", "state"], "desc": "Turn off the enabled feature flags related to a service"},
     "scale_service": {"params": ["service", "replicas"], "desc": "Scale a service (Kubernetes only)"},
 }
 
@@ -49,8 +49,9 @@ def _restart_cache(rc, diag):
 
 def _disable_feature(rc, diag):
     # An application-level fault in a healthy container: restarting will not change the failing code path.
-    # The usual safe mitigation is turning off the recently enabled feature behind it; a human names the flag.
-    return {"flag": HUMAN_PICKS, "state": "off", "service": rc["service"]}
+    # The usual safe mitigation is turning off the recently enabled feature(s) behind it. The Action API works out
+    # which enabled flags relate to the service; the agent (and its model) never sees flag names or states.
+    return {"service": rc["service"], "state": "off"}
 
 
 # category -> (action, params builder). Generic: keyed on category + diagnosed component, never on incident names.
@@ -76,6 +77,20 @@ def _same(a, b) -> bool:
         {k: v for k, v in b["params"].items() if v != HUMAN_PICKS}
 
 
+def fallback(action: str, params: dict) -> dict | None:
+    """The other rung of the ladder for one service: restart <-> turn off its enabled features."""
+    svc = params.get("service")
+    if not svc:
+        return None
+    if action == "restart_service":
+        return {"action": "toggle_feature_flag", "params": {"service": svc, "state": "off"},
+                "note": "restart already tried and did not help, so the cause is likely a recently enabled feature; "}
+    if action == "toggle_feature_flag" and svc not in NOT_RESTARTABLE:
+        return {"action": "restart_service", "params": {"service": svc},
+                "note": "no enabled feature to turn off for this service, so restart it instead; "}
+    return None
+
+
 def plan(diag: dict, tried: list | None = None) -> dict | None:
     """Pick one allowlisted action for a propose_fix diagnosis, with a reason and a rollback note.
     Escalation ladder: if restarting a service was already tried and did not help, the next generic remedy is
@@ -91,13 +106,11 @@ def plan(diag: dict, tried: list | None = None) -> dict | None:
     params = params_fn(rc, diag)
     note = ""
     if params and any(_same({"action": action, "params": params}, t) for t in tried):
-        if action == "restart_service" and params.get("service"):
-            action, params = "toggle_feature_flag", _disable_feature({"service": params["service"]}, diag)
-            note = "restart already tried and did not help, so the cause is likely a recently enabled feature; "
-        else:
+        alt = fallback(action, params)
+        if not alt or any(_same(alt, t) for t in tried):
             return None
-        if any(_same({"action": action, "params": params}, t) for t in tried):
-            return None
+        action, params = alt["action"], alt["params"]
+        note = alt["note"]
     if not params or (action == "restart_service" and (not params.get("service") or params["service"] in NOT_RESTARTABLE)):
         return None
     return {"action": action, "params": params,
@@ -114,7 +127,7 @@ class ActionClient:
         self.inc = incident
         self.url = config.setting("ACTION_API_URL").rstrip("/")
         self.token = config.setting("ACTION_API_TOKEN")
-        self.dry_run = (not self.url) if dry_run is None else dry_run
+        self.dry_only = (not self.url) if dry_run is None else dry_run
 
     def _audit(self, row):
         with open(os.path.join(self.inc.dir, "actions.jsonl"), "a", encoding="utf-8") as f:
@@ -141,15 +154,16 @@ class ActionClient:
         except requests.RequestException as e:
             return False, f"Action API unreachable at {self.url} ({type(e).__name__})"
 
-    def preview(self, p: dict) -> str:
-        """Read-only dry run, allowed without approval. With the API up, it also validates the target."""
-        call = f"{p['action']}({', '.join(f'{k}={v}' for k, v in p['params'].items())})"
+    def dry_run(self, p: dict) -> dict:
+        """Read-only check by the Action API, allowed without approval: is it possible, and what exactly would change."""
         if not self.url:
-            return f"{call} -> Action API not configured (dry run only)"
-        if HUMAN_PICKS in p["params"].values():
-            return f"{call} -> Action API (a parameter will be named by the human at approval)"
-        r = self._post("/actions/dry-run", {"action": p["action"], "params": p["params"]})
-        return f"{call} -> Action API dry run: {r.get('status')}" + (f" ({r.get('why')})" if r.get("why") else "")
+            return {"status": "dry_run", "would_do": "Action API not configured (dry run only)"}
+        return self._post("/actions/dry-run", {"action": p["action"], "params": p["params"]})
+
+    def preview(self, p: dict) -> str:
+        call = f"{p['action']}({', '.join(f'{k}={v}' for k, v in p['params'].items())})"
+        r = self.dry_run(p)
+        return f"{call} -> {r.get('would_do') or r.get('status')}" + (f" (refused: {r.get('why')})" if r.get("status") != "dry_run" else "")
 
     def execute(self, p: dict, approved_by: str) -> dict:
         if p["action"] not in ALLOWLIST:
@@ -160,7 +174,7 @@ class ActionClient:
             r = {"status": "refused", "why": "no human approval"}
         elif HUMAN_PICKS in p["params"].values():
             r = {"status": "refused", "why": "a parameter still needs to be named by the human"}
-        elif self.dry_run:
+        elif self.dry_only:
             r = {"status": "dry_run", "would_send": self.preview(p)}
         else:
             r = self._post("/actions/execute", {"action": p["action"], "params": p["params"], "reason": p["reason"],

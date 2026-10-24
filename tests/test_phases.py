@@ -89,23 +89,27 @@ def test_action_outside_allowlist_refused(tmp_path):
     assert r["status"] == "refused"
 
 
-def test_app_fault_proposes_flag_off_and_human_names_flag(monkeypatch):
+def test_app_fault_turns_off_related_features_without_human_typing(monkeypatch):
     model_says(monkeypatch, "product-catalog", "service_error")
-    rep, d = run(monkeypatch, "product_catalog_one_product", ["yes", "someFlag", "sumit"])
+    rep, d = run(monkeypatch, "product_catalog_one_product", ["yes", "sumit"])        # no flag prompt
     assert rep["action"]["action"] == "toggle_feature_flag"
-    assert rep["approval"]["params_from_human"]["flag"] == "someFlag"     # came from the human, not the agent
+    assert rep["action"]["params"] == {"service": "product-catalog", "state": "off"}
     assert rep["outcome"] == "fixed and verified"
 
 
-def test_no_flag_named_means_rejected(monkeypatch):
+def test_no_related_feature_on_falls_back_to_restart(monkeypatch):
     model_says(monkeypatch, "payment", "service_error")
-    rep, _ = run(monkeypatch, "payment_failure", ["yes", ""])
-    assert rep["action_result"] is None and "no flag" in rep["approval"]["reason"]
+    monkeypatch.setattr(run_offline.SimulatedActionClient, "dry_run", lambda self, p:
+                        {"status": "refused", "why": "no enabled feature flags related to payment"}
+                        if p["action"] == "toggle_feature_flag" else {"status": "dry_run"})
+    rep, _ = run(monkeypatch, "container_stopped", ["yes", "sumit"])
+    assert rep["action"]["action"] == "restart_service" and "no enabled feature" in rep["action"]["reason"]
+    assert rep["outcome"] == "fixed and verified"
 
 
 def test_restart_does_not_fix_an_app_fault_then_ladder_turns_feature_off(monkeypatch):
     model_says(monkeypatch, "product-catalog", "container_down")       # wrong category -> restart first
-    rep, _ = run(monkeypatch, "product_catalog_one_product", ["yes", "sumit", "yes", "someFlag", "sumit"])
+    rep, _ = run(monkeypatch, "product_catalog_one_product", ["yes", "sumit", "yes", "sumit"])
     assert rep["rounds"][0]["action"].startswith("restart_service") and rep["rounds"][0]["recovered"] is False
     assert rep["rounds"][1]["action"].startswith("toggle_feature_flag")
     assert "restart already tried" in rep["action"]["reason"]
@@ -148,12 +152,12 @@ def test_second_round_fixes_what_the_first_missed(monkeypatch):
     assert os.path.exists(f"{d}/diagnosis-round2.json")
 
 
-def test_ladder_never_repeats_an_identical_fix_and_stops_after_three_rounds(monkeypatch):
+def test_ladder_never_repeats_an_identical_fix(monkeypatch):
     model_sequence(monkeypatch, [("checkout", "container_down")] * 3)
-    # round 1 restart; round 2 flag-off (flagX), decline rollback; round 3 offers another flag: human says no
-    rep, _ = run(monkeypatch, "container_stopped", ["yes", "sumit", "yes", "flagX", "sumit", "no", "no"])
-    assert [r["action"].split()[0] for r in rep["rounds"]] == ["restart_service", "toggle_feature_flag", "toggle_feature_flag"]
-    assert len(rep["rounds"]) == 3 and rep["rounds"][2]["result"] is None       # third offer rejected, nothing ran
+    # round 1 restart; round 2 feature-off (decline rollback); round 3: both rungs tried -> escalate, no prompt
+    rep, _ = run(monkeypatch, "container_stopped", ["yes", "sumit", "yes", "sumit", "no"])
+    assert [r["action"] and r["action"].split()[0] for r in rep["rounds"]] == ["restart_service", "toggle_feature_flag", None]
+    assert rep["outcome"] == "fix applied but not recovered: escalated"
 
 def test_action_api_down_asks_then_escalates_without_acting(monkeypatch):
     model_says(monkeypatch, "payment", "container_down")

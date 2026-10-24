@@ -51,6 +51,8 @@ def _outcome(diag, approval, result, validation, rollback=None):
         return "approved; dry run only (Action API not configured)"
     if validation and validation.get("recovered"):
         return "fixed and verified"
+    if validation and validation.get("target_recovered"):
+        return "root cause fixed and verified; other alerts remain (another fault): escalated"
     if rollback and rollback.get("status") in ("executed", "simulated"):
         return "fix applied but not recovered: rolled back and escalated"
     return "fix applied but not recovered: escalated"

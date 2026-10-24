@@ -19,6 +19,10 @@ def _fake_promql(sc):
             raise ValueError(f"bad_data: invalid PromQL (offset inside range selector): {q[:120]}")
         base = "offset" in q
         err = "STATUS_CODE_ERROR" in q
+        m1 = re.match(r'sum\(increase\(traces_span_metrics_calls_total\{service_name="([^"]+)",.*STATUS_CODE_ERROR.*\[(\d+)m\]', q)
+        if m1:   # error-span count for one service over a short window (verification)
+            v = S.get(m1.group(1))
+            return [{"metric": {}, "value": float(v["rps"] * v["err"] * 60 * int(m1.group(2)))}] if v else []
         if "traces_span_metrics" in q:
             m = re.search(r'service_name="([^"]+)"', q)
             if m:  # per-operation query for one service

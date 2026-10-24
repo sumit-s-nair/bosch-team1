@@ -1,0 +1,23 @@
+"""Verification judges the fix by the service it targeted; alerts from another fault do not count against it."""
+from agent import verify
+
+
+def test_fixed_service_healthy_but_other_fault_remains(monkeypatch):
+    monkeypatch.setattr(verify.detector, "check", lambda: [{"type": "memory_leak", "service": "ad"}])
+    monkeypatch.setattr(verify, "target_healthy", lambda s: (True, "no errors"))
+    r = verify.recovered([{"type": "error_rate", "service": "product-catalog"}], target="product-catalog",
+                         settle_s=0, polls=2, poll_s=0)
+    assert r["target_recovered"] and not r["recovered"] and r["other_alerts"][0]["service"] == "ad"
+
+
+def test_fixed_service_still_failing(monkeypatch):
+    monkeypatch.setattr(verify.detector, "check", lambda: [{"type": "error_rate", "service": "payment"}])
+    monkeypatch.setattr(verify, "target_healthy", lambda s: (False, "5 error spans"))
+    r = verify.recovered([{"type": "error_rate", "service": "payment"}], target="payment", settle_s=0, polls=2, poll_s=0)
+    assert not r["target_recovered"] and not r["recovered"]
+
+
+def test_everything_clear(monkeypatch):
+    monkeypatch.setattr(verify.detector, "check", lambda: [])
+    monkeypatch.setattr(verify, "target_healthy", lambda s: (True, "ok"))
+    assert verify.recovered([{"type": "container", "service": "payment"}], target="payment", settle_s=0, polls=2, poll_s=0)["recovered"]
