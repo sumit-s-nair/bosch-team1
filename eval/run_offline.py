@@ -82,6 +82,9 @@ class SimulatedActionClient:
         self.sc = sc
         self.calls = []
 
+    def health(self):
+        return True, "simulated"
+
     def preview(self, p):
         return self.real.preview(p).replace("Action API not configured (dry run only)", "SIMULATED (offline scenario)")
 

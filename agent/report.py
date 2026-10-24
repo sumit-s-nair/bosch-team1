@@ -2,7 +2,7 @@
 TODO-ALIGN: map report.json to the organisers' JSON schema when it is published."""
 
 
-def build(inc, alerts, diag, p, approval, result, validation, rollback=None) -> dict:
+def build(inc, alerts, diag, p, approval, result, validation, rollback=None, rounds=None) -> dict:
     rc = diag.get("root_cause", {})
     rep = {
         "incident_id": inc.id,
@@ -15,6 +15,7 @@ def build(inc, alerts, diag, p, approval, result, validation, rollback=None) -> 
                      for e in diag.get("evidence", [])],
         "action": p, "approval": approval, "action_result": result, "validation": validation, "rollback": rollback,
         "outcome": _outcome(diag, approval, result, validation, rollback),
+        "rounds": rounds or [],
         "prevention": _prevention(rc),
         "timeline": inc.timeline(),
     }
@@ -27,6 +28,8 @@ def build(inc, alerts, diag, p, approval, result, validation, rollback=None) -> 
     md += ["", "## Action", f"- Plan: {p}" if p else "- None (escalated)", f"- Approval: {approval}",
            f"- Result: {result}", f"- Recovered: {validation.get('recovered') if validation else 'n/a'}",
            f"- Rollback: {rollback if rollback else 'n/a'}",
+           *([f"- Round {r['round']}: {r['diagnosis']} -> {r['action'] or 'no action'} -> {r['result']}"
+              for r in (rounds or [])] if rounds and len(rounds) > 1 else []),
            "", "## Prevention", f"- {rep['prevention']}", "", "## Timeline"]
     md += [f"- {t['t']} {t['phase']}: {t['msg']}" for t in rep["timeline"]]
     with open(f"{inc.dir}/report.md", "w", encoding="utf-8") as f:
@@ -39,6 +42,8 @@ def _outcome(diag, approval, result, validation, rollback=None):
         return "no incident found"
     if not approval or not approval.get("approved"):
         return "escalated to human" if diag.get("decision") == "escalate" else f"not fixed: {approval.get('reason') if approval else ''}"
+    if result and result.get("status") in ("failed", "refused"):
+        return f"fix not applied ({result.get('why') or result.get('status')}): escalated"
     if result and result.get("status") == "dry_run":
         return "approved; dry run only (Action API not configured)"
     if validation and validation.get("recovered"):

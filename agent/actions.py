@@ -112,6 +112,18 @@ class ActionClient:
         except requests.RequestException as e:
             return {"status": "failed", "why": f"Action API unreachable: {type(e).__name__}"}
 
+    def health(self) -> tuple[bool, str]:
+        """Is the Action API reachable? (Always 'ok' in dry-run-only mode.)"""
+        if not self.url:
+            return True, "dry-run only (no ACTION_API_URL)"
+        try:
+            r = requests.get(f"{self.url}/health", timeout=5)
+            if r.ok and r.json().get("kill_switch"):
+                return False, "Action API kill switch is on"
+            return r.ok, f"HTTP {r.status_code}"
+        except requests.RequestException as e:
+            return False, f"Action API unreachable at {self.url} ({type(e).__name__})"
+
     def preview(self, p: dict) -> str:
         """Read-only dry run, allowed without approval. With the API up, it also validates the target."""
         call = f"{p['action']}({', '.join(f'{k}={v}' for k, v in p['params'].items())})"

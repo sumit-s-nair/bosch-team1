@@ -125,7 +125,7 @@ def validate(diag: dict, L: Ledger) -> dict:
     return diag
 
 
-def investigate(alerts: list[dict], log=print) -> dict:
+def investigate(alerts: list[dict], log=print, context: str = "") -> dict:
     L = Ledger()
     t0 = time.time()
     trail = []
@@ -142,6 +142,7 @@ def investigate(alerts: list[dict], log=print) -> dict:
     messages = [
         {"role": "system", "content": SYSTEM},
         {"role": "user", "content": f"ALERT: {json.dumps(alerts)}\n\nInitial sweep:\n\n" + "\n\n".join(sweep) +
+         ("\n\nEARLIER IN THIS INCIDENT:\n" + context if context else "") +
          "\n\nInvestigate further with tools to find the root cause."},
     ]
     tools = _tool_specs(services)

@@ -117,3 +117,56 @@ def test_cache_fault_targets_the_cache_not_its_caller():
     assert actions.plan(diag)["params"] == {"service": "valkey-cart"}
     diag["evidence"] = []
     assert actions.plan(diag) is None      # cannot tell which cache -> escalate
+
+
+def model_sequence(monkeypatch, answers):
+    """One (service, category) per investigation round."""
+    it = iter(answers)
+    state = {}
+
+    def chat(messages, tools=None, think=True, json_mode=False, timeout=0):
+        if not json_mode:
+            return {"role": "assistant", "content": "enough"}
+        service, category = next(it)
+        text = "\n".join(m["content"] for m in messages if isinstance(m.get("content"), str))
+        state.setdefault("prompts", []).append(text)
+        ids = [l.split("[E")[1].split("]")[0] for l in text.splitlines() if service in l and "[E" in l]
+        return {"role": "assistant", "content": json.dumps({
+            "summary": f"{service} broken", "root_cause": {"service": service, "category": category, "description": "x"},
+            "confidence": 0.9, "evidence": [{"id": f"E{i}", "why": "w"} for i in ids[:3]]})}
+    monkeypatch.setattr(llm, "chat", chat)
+    return state
+
+
+def test_second_round_fixes_what_the_first_missed(monkeypatch):
+    st = model_sequence(monkeypatch, [("checkout", "container_down"), ("payment", "container_down")])
+    rep, d = run(monkeypatch, "container_stopped", ["yes", "sumit", "yes", "sumit"])
+    assert rep["outcome"] == "fixed and verified" and len(rep["rounds"]) == 2
+    assert rep["rounds"][0]["recovered"] is False and rep["action"]["params"] == {"service": "payment"}
+    assert "did NOT recover" in st["prompts"][-1]            # round 2 knew what was tried
+    assert os.path.exists(f"{d}/diagnosis-round2.json")
+
+
+def test_same_fix_is_never_repeated(monkeypatch):
+    model_sequence(monkeypatch, [("checkout", "container_down"), ("checkout", "container_down")])
+    rep, _ = run(monkeypatch, "container_stopped", ["yes", "sumit"])          # no second approval is asked
+    assert rep["outcome"] == "fix applied but not recovered: escalated" and len(rep["rounds"]) == 2
+
+
+def test_action_api_down_asks_then_escalates_without_acting(monkeypatch):
+    model_says(monkeypatch, "payment", "container_down")
+    monkeypatch.setattr(run_offline.SimulatedActionClient, "health", lambda self: (False, "Action API unreachable"))
+    calls = []
+    monkeypatch.setattr(run_offline.SimulatedActionClient, "execute", lambda self, p, by: calls.append(p))
+    rep, _ = run(monkeypatch, "container_stopped", ["", "skip", ""])          # retry once, skip, acknowledge escalation
+    assert calls == [] and rep["outcome"] == "escalated to human"
+    assert any("Action API unreachable" in n for n in json.load(open(sorted(
+        f"runs/{x}/diagnosis.json" for x in os.listdir("runs"))[-1]))["validation_notes"])
+
+
+def test_failed_action_is_reported_as_not_applied(monkeypatch):
+    model_says(monkeypatch, "payment", "container_down")
+    monkeypatch.setattr(run_offline.SimulatedActionClient, "execute",
+                        lambda self, p, by: {"status": "failed", "why": "Action API unreachable"})
+    rep, _ = run(monkeypatch, "container_stopped", ["yes", "sumit"])
+    assert rep["outcome"] == "fix not applied (Action API unreachable): escalated"
