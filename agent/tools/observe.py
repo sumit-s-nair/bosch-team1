@@ -20,15 +20,47 @@ DEMO_SERVICES_SKIP = {"load-generator", "jaeger", "otelcol-contrib", "flagd", "f
 # docker_stats metrics: container_cpu_utilization_ratio is already PERCENT (100 = one full core),
 # container_memory_percent_ratio is percent of the container memory limit.
 CPU_HOT_PCT = 80
-MEM_HOT_PCT = 92
+MEM_HOT_PCT = 95
 MEM_GROWTH_Q = "deriv(container_memory_usage_total_bytes[5m]) * 60 / 1048576"  # MB per minute
 # minutes until the container hits its memory limit at the current growth rate (only for growing containers)
 MEM_TTL_Q = ("(container_memory_usage_limit_bytes - container_memory_usage_total_bytes)"
-             " / (deriv(container_memory_usage_total_bytes[5m]) * 60) and deriv(container_memory_usage_total_bytes[5m]) > 0")
+             " / (deriv(container_memory_usage_total_bytes[10m]) * 60) and deriv(container_memory_usage_total_bytes[10m]) > 0")
 LEAK_TTL_MIN = 30
 MEMORY_GROWTH_THRESHOLD_PCT = 20.0  # Plain growth hint, not a diagnosis.
 TRAFFIC_SPIKE_RATIO = 3.0  # Plain volume hint, not a diagnosis.
-NOT_A_CULPRIT_FOR_RESOURCES = {"load-generator"}   # synthetic traffic source; its own memory/CPU is not an incident
+# synthetic traffic source + the monitoring stack (JVMs like OpenSearch fill their heap to the limit by design):
+# their own memory/CPU is not an incident in the shop
+NOT_A_CULPRIT_FOR_RESOURCES = {"load-generator", "otel-collector", "opensearch", "prometheus", "jaeger", "grafana",
+                               "opamp-server", "telemetry-docs"}
+LEAK_MIN_MEM_PCT = 70           # a leak only matters once the container is this close to its limit
+WARMUP_MIN = 15                 # memory grows after a (re)start; no leak verdicts during warm-up
+STACK_START_WINDOW_S = 120      # containers started within 2 min of the bulk = "the demo started", not a change
+
+
+def _starts() -> tuple[dict, float | None, datetime]:
+    """Start time per container, plus when the stack as a whole started (if most containers started together)."""
+    now = datetime.now(timezone.utc)
+    starts, info = {}, {}
+    for c in containers.list_containers():
+        i = containers.inspect(c["name"])
+        info[c["name"]] = i
+        try:
+            starts[c["name"]] = datetime.fromisoformat(i["started_at"][:26].rstrip("Z") + "+00:00").timestamp()
+        except Exception:
+            pass
+    stack = None
+    if starts:
+        ts = sorted(starts.values())
+        med = ts[len(ts) // 2]
+        if sum(abs(t - med) <= STACK_START_WINDOW_S for t in ts) >= 0.6 * len(ts):
+            stack = med
+    return {"starts": starts, "info": info}, stack, now
+
+
+def _individual_restart(name, starts, stack) -> bool:
+    """Started on its own (not as part of the whole demo starting)."""
+    t = starts.get(name)
+    return t is not None and (stack is None or t - stack > STACK_START_WINDOW_S)
 # CPU starvation: usage as % of the container's OWN cpu limit (docker --cpus), and CFS throttling ratio
 CPU_LIMIT_HOT_PCT = 85
 THROTTLE_HOT = 0.20
@@ -287,35 +319,42 @@ def error_logs(L: Ledger, service: str | None = None, minutes: int = 10) -> str:
 
 
 # ------------------------------------------------------------------ containers / infra
+def _is_leak(name, memp, ttl, starts, now_ts) -> bool:
+    started = starts.get(name)
+    warm = started is not None and now_ts - started < WARMUP_MIN * 60
+    return (name not in NOT_A_CULPRIT_FOR_RESOURCES and not warm and ttl.get(name, 1e9) < LEAK_TTL_MIN
+            and memp.get(name, 0) >= LEAK_MIN_MEM_PCT)
+
+
 def container_health(L: Ledger) -> str:
-    """Docker state of every demo container: stopped, restarting, OOM-killed, recently (re)started, CPU/mem pressure."""
+    """Docker state of every demo container: stopped, restarting, OOM-killed, restarted on its own, CPU/mem pressure."""
     cs = containers.list_containers()
     cpu = _byservice("container_cpu_utilization_ratio", "container_name")
     memp = _byservice("container_memory_percent_ratio", "container_name")
     grow = _byservice(MEM_GROWTH_Q, "container_name")
     ttl = _byservice(MEM_TTL_Q, "container_name")
     throttled = _byservice(THROTTLE_Q, "container_name")
-    now = datetime.now(timezone.utc)
+    st, stack, now = _starts()
+    starts = st["starts"]
     lines, healthy = [], 0
+    if stack is not None and now.timestamp() - stack < 1800:
+        d = f"the whole demo started together {(now.timestamp() - stack) / 60:.0f} min ago (normal startup, baselines still filling)"
+        lines.append(f"- note: {d} [{L.add('change', d, ref='stack-start', anomalous=False)}]")
     for c in cs:
-        info = containers.inspect(c["name"])
+        name = c["name"]
+        info = st["info"].get(name) or containers.inspect(name)
+        on_its_own = _individual_restart(name, starts, stack)
         issues = []
         if not info.get("running"):
             issues.append(f"NOT RUNNING (status={info['status']}, exit={info['exit_code']})")
         if info.get("oom_killed"):
             issues.append("OOM-KILLED")
-        if info.get("restart_count"):
+        if info.get("restart_count") and on_its_own:
             issues.append(f"restarts={info['restart_count']}")
-        try:
-            started = datetime.fromisoformat(info["started_at"][:26].rstrip("Z") + "+00:00")
-            age = (now - started).total_seconds()
-            if age < 900:
-                issues.append(f"started {age/60:.1f} min ago")
-        except Exception:
-            pass
+        if on_its_own and name in starts and now.timestamp() - starts[name] < 900:
+            issues.append(f"restarted on its own {(now.timestamp() - starts[name]) / 60:.1f} min ago")
         if "unhealthy" in c["status"]:
             issues.append("healthcheck UNHEALTHY")
-        name = c["name"]
         limit, used = info.get("cpu_limit_cores"), cpu.get(name)   # used = % of ONE core
         if limit and used is not None and name not in NOT_A_CULPRIT_FOR_RESOURCES:
             of_limit = used / (limit * 100) * 100
@@ -326,14 +365,13 @@ def container_health(L: Ledger) -> str:
         if throttled.get(name, 0) > THROTTLE_HOT and name not in NOT_A_CULPRIT_FOR_RESOURCES:
             issues.append(f"CPU THROTTLED in {throttled[name]*100:.0f}% of scheduling periods"
                           + (f" (limit {limit:g} CPU)" if limit else ""))
-        if memp.get(c["name"], 0) > MEM_HOT_PCT:
-            issues.append(f"memory {memp[c['name']]:.0f}% of limit")
-        if ttl.get(c["name"], 1e9) < LEAK_TTL_MIN and c["name"] not in NOT_A_CULPRIT_FOR_RESOURCES:
-            issues.append(f"memory growing {grow.get(c['name'], 0):.1f} MB/min, hits limit in ~{ttl[c['name']]:.0f} min")
+        if memp.get(name, 0) > MEM_HOT_PCT and name not in NOT_A_CULPRIT_FOR_RESOURCES:
+            issues.append(f"memory {memp[name]:.0f}% of limit")
+        if _is_leak(name, memp, ttl, starts, now.timestamp()):
+            issues.append(f"memory growing {grow.get(name, 0):.1f} MB/min, hits limit in ~{ttl[name]:.0f} min")
         if issues:
-            eid = L.add("container", f"{c['name']}: " + "; ".join(issues), ref=f"container:{c['name']}",
-                        value=info, anomalous=True)
-            lines.append(f"- {c['name']}: {'; '.join(issues)} [{eid}]")
+            eid = L.add("container", f"{name}: " + "; ".join(issues), ref=f"container:{name}", value=info, anomalous=True)
+            lines.append(f"- {name}: {'; '.join(issues)} [{eid}]")
         else:
             healthy += 1
     head = f"{len(cs)} containers, {healthy} with no issues."
@@ -357,7 +395,7 @@ def resource_usage(L: Ledger, service=None, window="10m"):
     lines.append("Fastest memory growth (MB/min over 5m; minutes until limit):")
     for n, v in sorted(grow.items(), key=lambda x: -x[1])[:3]:
         t = ttl.get(n)
-        leak = t is not None and t < LEAK_TTL_MIN and n not in NOT_A_CULPRIT_FOR_RESOURCES
+        leak = t is not None and t < LEAK_TTL_MIN and n not in NOT_A_CULPRIT_FOR_RESOURCES and memp.get(n, 0) >= LEAK_MIN_MEM_PCT
         d = f"{n} memory growth {v:+.1f} MB/min, limit in {'~%.0f min' % t if t else 'n/a'}"
         lines.append(f"- {d}{'  <-- LEAK RISK' if leak else ''} [{L.add('metric', d, ref=f'container_mem_growth:{n}', anomalous=leak)}]")
     runtime = metric_details.runtime(service, window, MEMORY_GROWTH_THRESHOLD_PCT)
@@ -374,21 +412,22 @@ def resource_usage(L: Ledger, service=None, window="10m"):
 
 
 def recent_changes(L: Ledger, minutes: int = 30) -> str:
-    """Deployment-history proxy: containers (re)created or restarted in the last N minutes, with image tag."""
-    now = datetime.now(timezone.utc)
+    """Deployment-history proxy: containers (re)started on their own in the last N minutes.
+    The whole demo starting together is reported once, as normal startup, not as a change."""
+    st, stack, now = _starts()
     lines = []
-    for c in containers.list_containers():
-        info = containers.inspect(c["name"])
-        try:
-            started = datetime.fromisoformat(info["started_at"][:26].rstrip("Z") + "+00:00")
-        except Exception:
-            continue
-        age = (now - started).total_seconds() / 60
-        if age <= minutes:
-            eid = L.add("change", f"{c['name']} (re)started {age:.1f} min ago, restarts={info['restart_count']}",
-                        ref=f"container:{c['name']}", anomalous=True)
-            lines.append(f"- {c['name']} started {age:.1f} min ago (restarts={info['restart_count']}) [{eid}]")
-    return ("Changes in last %d min:\n" % minutes + "\n".join(lines)) if lines else f"No container (re)starts in the last {minutes} min."
+    if stack is not None and now.timestamp() - stack <= minutes * 60:
+        d = (f"the whole demo started together {(now.timestamp() - stack) / 60:.0f} min ago "
+             f"({sum(abs(t - stack) <= STACK_START_WINDOW_S for t in st['starts'].values())} containers): normal startup, not a change")
+        lines.append(f"- {d} [{L.add('change', d, ref='stack-start', anomalous=False)}]")
+    for name, t in sorted(st["starts"].items()):
+        age = (now.timestamp() - t) / 60
+        if age <= minutes and _individual_restart(name, st["starts"], stack):
+            rc = st["info"][name].get("restart_count")
+            eid = L.add("change", f"{name} restarted on its own {age:.1f} min ago, restarts={rc}",
+                        ref=f"container:{name}", anomalous=True)
+            lines.append(f"- {name} restarted on its own {age:.1f} min ago (restarts={rc}) [{eid}]")
+    return (f"Changes in last {minutes} min:\n" + "\n".join(lines)) if lines else f"No container (re)starts in the last {minutes} min."
 
 
 def cache_health(L: Ledger) -> str:
