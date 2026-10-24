@@ -93,6 +93,25 @@ def _parse_json(text: str):
     return json.loads(m.group(0))
 
 
+def other_problems(diag: dict, L: Ledger, limit: int = 6) -> list[str]:
+    """Abnormal facts about OTHER services than the root cause: with several faults at once, the human must see
+    what this diagnosis does not explain (the agent fixes one thing at a time)."""
+    root = (diag.get("root_cause") or {}).get("service") or ""
+    cited = {e["id"] for e in diag.get("evidence", [])}
+    out, seen = [], set()
+    for i in L.items.values():
+        if not i["anomalous"] or i["id"] in cited:
+            continue
+        ref = str(i.get("ref") or "")
+        svc = ref.split(":", 1)[1].split(":")[0] if ref.split(":")[0] in ("container", "span_metrics") else i["detail"].split(":")[0].split()[0]
+        if not svc or svc == root or svc in ("frontend", "frontend-proxy") or root and root in i["detail"]:
+            continue
+        if svc not in seen:
+            seen.add(svc)
+            out.append(f"{i['detail'][:140]} [{i['id']}]")
+    return out[:limit]
+
+
 def validate(diag: dict, L: Ledger) -> dict:
     """Drop cited evidence that isn't in the ledger; enforce decision rules."""
     notes = []
@@ -209,6 +228,7 @@ def investigate(alerts: list[dict], log=print, context: str = "") -> dict:
     if not real_alerts and not any(i["anomalous"] for i in L.items.values()):
         diag["decision"] = "no_incident"
         diag["validation_notes"].append("no alert fired and no tool found anything abnormal")
+    diag["other_problems"] = other_problems(diag, L)
     diag["alerts"] = alerts
     diag["tool_trail"] = trail
     diag["investigation_seconds"] = round(time.time() - t0, 1)

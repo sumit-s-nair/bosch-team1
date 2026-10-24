@@ -10,6 +10,9 @@ def summary(diag: dict, p: dict | None, preview: str | None) -> str:
     lines += [f"  [{e['id']}] {e['observed']}" for e in diag.get("evidence", [])]
     for n in diag.get("validation_notes", []):
         lines.append(f"  note: {n}")
+    if diag.get("other_problems"):
+        lines.append("Other problems seen (NOT addressed by this diagnosis; check them after this fix):")
+        lines += [f"  - {o}" for o in diag["other_problems"]]
     if p:
         lines += [f"PROPOSED FIX: {p['action']} {p['params']}", f"  reason:   {p['reason']}",
                   f"  rollback: {p['rollback']}", f"  dry run:  {preview}"]

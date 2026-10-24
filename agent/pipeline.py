@@ -13,7 +13,7 @@ from agent import actions, approval, brain, detector, report, verify
 from agent.incident import Incident
 
 
-MAX_ROUNDS = 2      # one re-investigation after a fix that ran but did not recover
+MAX_ROUNDS = 3      # re-investigate after a fix that ran but did not recover (escalation ladder)
 
 
 def run(mode="now", ask_fn=None, client_factory=None, validate_kw=None, on_executed=None):
@@ -43,10 +43,10 @@ def run(mode="now", ask_fn=None, client_factory=None, validate_kw=None, on_execu
         inc.event("investigate", f"{rc.get('service')} / {rc.get('category')} conf={diag['confidence']} -> {diag['decision']}",
                   tools=[t["tool"] for t in diag["tool_trail"]])
 
-        p = actions.plan(diag)
-        if p and any(p["action"] == t["action"] and p["params"] == t["params"] for t in tried):
-            inc.event("investigate", f"same fix as already tried ({p['action']} {p['params']}): not repeating it, escalating")
-            diag["decision"], p = "escalate", None
+        p = actions.plan(diag, tried)
+        if not p and diag["decision"] == "propose_fix" and tried:
+            inc.event("investigate", "every fix the runbook offers for this was already tried: escalating")
+            diag["decision"] = "escalate"
         preview = client.preview(p) if p else None
         if p:
             inc.save(f"plan{sfx}.json", {**p, "dry_run_preview": preview})
@@ -69,6 +69,7 @@ def run(mode="now", ask_fn=None, client_factory=None, validate_kw=None, on_execu
         if diag["decision"] == "no_incident":
             appr = {"approved": False, "by": None, "reason": "no incident"}
         elif rnd > 1 and not p:
+            print(approval.summary(diag, None, None))          # the human always sees what round N found
             appr = {"approved": False, "by": None, "reason": "escalated after a fix that did not recover"}
         else:
             inc.event("human", "waiting for approval" if p else "escalating to human")

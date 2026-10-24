@@ -71,8 +71,16 @@ def kill_switch_on() -> bool:
     return os.path.exists("STOP") or os.getenv("AGENT_KILL") == "1"
 
 
-def plan(diag: dict) -> dict | None:
-    """Pick one allowlisted action for a propose_fix diagnosis, with a reason and a rollback note."""
+def _same(a, b) -> bool:
+    return a["action"] == b["action"] and {k: v for k, v in a["params"].items() if v != HUMAN_PICKS} == \
+        {k: v for k, v in b["params"].items() if v != HUMAN_PICKS}
+
+
+def plan(diag: dict, tried: list | None = None) -> dict | None:
+    """Pick one allowlisted action for a propose_fix diagnosis, with a reason and a rollback note.
+    Escalation ladder: if restarting a service was already tried and did not help, the next generic remedy is
+    turning off the feature behind that service (a human names the flag). Never repeats an action already tried."""
+    tried = tried or []
     if diag.get("decision") != "propose_fix":
         return None
     rc = diag.get("root_cause", {})
@@ -81,10 +89,19 @@ def plan(diag: dict) -> dict | None:
         return None
     action, params_fn = entry
     params = params_fn(rc, diag)
+    note = ""
+    if params and any(_same({"action": action, "params": params}, t) for t in tried):
+        if action == "restart_service" and params.get("service"):
+            action, params = "toggle_feature_flag", _disable_feature({"service": params["service"]}, diag)
+            note = "restart already tried and did not help, so the cause is likely a recently enabled feature; "
+        else:
+            return None
+        if any(_same({"action": action, "params": params}, t) for t in tried):
+            return None
     if not params or (action == "restart_service" and (not params.get("service") or params["service"] in NOT_RESTARTABLE)):
         return None
     return {"action": action, "params": params,
-            "reason": f"{rc.get('category')} in {rc.get('service')}: {rc.get('description', '')}"[:300],
+            "reason": (note + f"{rc.get('category')} in {rc.get('service')}: {rc.get('description', '')}")[:300],
             "expected_effect": "alerting signals return to baseline within ~2 minutes",
             "rollback": ("turn the flag back on" if action == "toggle_feature_flag"
                          else "none needed for a restart/throttle") + "; if not recovered, escalate to a human"}

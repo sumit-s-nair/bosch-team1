@@ -65,9 +65,9 @@ def test_rejected_means_nothing_executes(monkeypatch):
 
 def test_wrong_target_not_recovered_escalates(monkeypatch):
     model_says(monkeypatch, "checkout", "container_down")       # restarts checkout, but payment is the one down
-    rep, _ = run(monkeypatch, "container_stopped", ["yes", "sumit"])
-    assert rep["outcome"] == "fix applied but not recovered: escalated"
-
+    rep, _ = run(monkeypatch, "container_stopped", ["yes", "sumit", "no"])   # round 2 offers flag-off: human says no
+    assert rep["rounds"][0]["recovered"] is False
+    assert rep["rounds"][1]["action"].startswith("toggle_feature_flag") and rep["action_result"] is None
 
 def test_kill_switch_blocks_execution(monkeypatch):
     model_says(monkeypatch, "payment", "container_down")
@@ -103,12 +103,13 @@ def test_no_flag_named_means_rejected(monkeypatch):
     assert rep["action_result"] is None and "no flag" in rep["approval"]["reason"]
 
 
-def test_restart_does_not_fix_an_app_fault(monkeypatch):
-    model_says(monkeypatch, "product-catalog", "container_down")       # wrong category -> restart
-    rep, _ = run(monkeypatch, "product_catalog_one_product", ["yes", "sumit"])
-    assert rep["action"]["action"] == "restart_service"
-    assert rep["outcome"] == "fix applied but not recovered: escalated"
-
+def test_restart_does_not_fix_an_app_fault_then_ladder_turns_feature_off(monkeypatch):
+    model_says(monkeypatch, "product-catalog", "container_down")       # wrong category -> restart first
+    rep, _ = run(monkeypatch, "product_catalog_one_product", ["yes", "sumit", "yes", "someFlag", "sumit"])
+    assert rep["rounds"][0]["action"].startswith("restart_service") and rep["rounds"][0]["recovered"] is False
+    assert rep["rounds"][1]["action"].startswith("toggle_feature_flag")
+    assert "restart already tried" in rep["action"]["reason"]
+    assert rep["outcome"] == "fixed and verified"
 
 def test_cache_fault_targets_the_cache_not_its_caller():
     diag = {"decision": "propose_fix",
@@ -147,11 +148,12 @@ def test_second_round_fixes_what_the_first_missed(monkeypatch):
     assert os.path.exists(f"{d}/diagnosis-round2.json")
 
 
-def test_same_fix_is_never_repeated(monkeypatch):
-    model_sequence(monkeypatch, [("checkout", "container_down"), ("checkout", "container_down")])
-    rep, _ = run(monkeypatch, "container_stopped", ["yes", "sumit"])          # no second approval is asked
-    assert rep["outcome"] == "fix applied but not recovered: escalated" and len(rep["rounds"]) == 2
-
+def test_ladder_never_repeats_an_identical_fix_and_stops_after_three_rounds(monkeypatch):
+    model_sequence(monkeypatch, [("checkout", "container_down")] * 3)
+    # round 1 restart; round 2 flag-off (flagX), decline rollback; round 3 offers another flag: human says no
+    rep, _ = run(monkeypatch, "container_stopped", ["yes", "sumit", "yes", "flagX", "sumit", "no", "no"])
+    assert [r["action"].split()[0] for r in rep["rounds"]] == ["restart_service", "toggle_feature_flag", "toggle_feature_flag"]
+    assert len(rep["rounds"]) == 3 and rep["rounds"][2]["result"] is None       # third offer rejected, nothing ran
 
 def test_action_api_down_asks_then_escalates_without_acting(monkeypatch):
     model_says(monkeypatch, "payment", "container_down")
@@ -178,3 +180,10 @@ def test_quiet_manual_page_does_not_call_the_model(monkeypatch):
     monkeypatch.setattr(llm, "chat", boom)
     rep, _ = run(monkeypatch, "healthy", [])
     assert rep["outcome"] == "no incident found"
+
+
+def test_other_problems_are_listed_for_the_human(monkeypatch):
+    model_says(monkeypatch, "payment", "service_error")
+    rep, d = run(monkeypatch, "combined_payment_and_cache", ["no"])
+    assert any("valkey-cart" in o for o in rep["other_problems"]), rep["other_problems"]
+    assert "Other problems seen" in open(f"{d}/report.md").read()

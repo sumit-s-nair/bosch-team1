@@ -16,6 +16,7 @@ def build(inc, alerts, diag, p, approval, result, validation, rollback=None, rou
         "action": p, "approval": approval, "action_result": result, "validation": validation, "rollback": rollback,
         "outcome": _outcome(diag, approval, result, validation, rollback),
         "rounds": rounds or [],
+        "other_problems": diag.get("other_problems", []),
         "prevention": _prevention(rc),
         "timeline": inc.timeline(),
     }
@@ -30,6 +31,8 @@ def build(inc, alerts, diag, p, approval, result, validation, rollback=None, rou
            f"- Rollback: {rollback if rollback else 'n/a'}",
            *([f"- Round {r['round']}: {r['diagnosis']} -> {r['action'] or 'no action'} -> {r['result']}"
               for r in (rounds or [])] if rounds and len(rounds) > 1 else []),
+           *(["", "## Other problems seen (not addressed)"] + [f"- {o}" for o in diag.get("other_problems", [])]
+             if diag.get("other_problems") else []),
            "", "## Prevention", f"- {rep['prevention']}", "", "## Timeline"]
     md += [f"- {t['t']} {t['phase']}: {t['msg']}" for t in rep["timeline"]]
     with open(f"{inc.dir}/report.md", "w", encoding="utf-8") as f:
