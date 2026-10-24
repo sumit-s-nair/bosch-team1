@@ -1,5 +1,6 @@
 """Rule-based alerting on span metrics + container state (no LLM). Mirrors an error-rate / latency alert."""
 import time
+import math
 from agent.tools import observe
 from agent.tools import containers
 
@@ -13,11 +14,38 @@ WINDOW_S = 120
 OP_WINDOW = "5m"            # per-operation errors: longer window so rare calls (EmptyCart at checkout) are counted
 OP_ERR_THRESHOLD = 0.10
 OP_MIN_ERRORS = 2
+SPIKE_MIN_RPS = 1.0         # traffic spike: > observe.TRAFFIC_SPIKE_RATIO (3x) baseline and at least this many rps
+BASELINE_SPAN_S = 35 * 60   # the baseline window ends 20m ago and is 15m long; a younger demo has a partial baseline
 
 
-def check() -> list[dict]:
+def check(strict=False, original_alerts=None) -> list[dict]:
     alerts = []
-    for s, v in observe.service_health_raw().items():
+    health = observe.service_health_raw(strict=True) if strict else observe.service_health_raw()
+    try:
+        cs = containers.list_containers()
+    except Exception as e:          # docker briefly unavailable: metric-based alerts still count (not when verifying)
+        if strict:
+            raise
+        print(f"(container checks skipped this poll: {str(e)[:100]})")
+        cs = None
+    if strict:
+        def observed(v):
+            return (isinstance(v.get("rps"), (int, float)) and math.isfinite(v["rps"]) and v["rps"] > 0
+                    and all(isinstance(v.get(k), (int, float)) and math.isfinite(v[k]) for k in ("err_rate", "p95_ms")))
+        if not health or not any(observed(v) for v in health.values()):
+            raise ValueError("Recovery unverified: no active request/error/latency telemetry")
+        if not cs:
+            raise ValueError("Recovery unverified: no demo containers observed")
+        for alert in original_alerts or []:
+            service = alert.get("service")
+            if alert.get("type") == "container":
+                if not any(c["name"] == service for c in cs):
+                    raise ValueError(f"Recovery unverified: container {service} is missing")
+            elif alert.get("type") not in ("manual", "memory_leak", "cpu_starved", "container_restarted") \
+                    and not observed(health.get(service, {})):
+                raise ValueError(f"Recovery unverified: active telemetry missing for {service}")
+    spikes = []
+    for s, v in health.items():
         errors_in_window = (v["err_rate"] or 0) * v["rps"] * WINDOW_S
         if v["rps"] >= MIN_RPS and v["err_rate"] is not None and v["err_rate"] >= ERR_THRESHOLD \
                 and errors_in_window >= MIN_ERRORS and v["err_rate"] > 2 * (v["base_err_rate"] or 0):
@@ -33,17 +61,33 @@ def check() -> list[dict]:
         if v["base_rps"] and v["base_rps"] > 0.2 and v["rps"] < 0.2 * v["base_rps"]:
             alerts.append({"type": "traffic_drop", "service": s, "value": round(v["rps"], 2),
                            "baseline": round(v["base_rps"], 2)})
+        if v["base_rps"] and v["base_rps"] > 0.2 and v["rps"] >= SPIKE_MIN_RPS and v["rps"] > observe.TRAFFIC_SPIKE_RATIO * v["base_rps"]:
+            spikes.append({"type": "traffic_spike", "service": s, "value": round(v["rps"], 2),
+                           "baseline": round(v["base_rps"], 2)})
+    if spikes and not _baseline_partial():
+        alerts += spikes
     alerted = {a["service"] for a in alerts if a["type"] == "error_rate"}
     alerts += [a for a in operation_errors() if a["service"] not in alerted]
-    try:
-        for c in containers.list_containers():
+    if cs is not None:
+        for c in cs:
             if c["state"] != "running" or "unhealthy" in c["status"] or "Restarting" in c["status"]:
                 alerts.append({"type": "container", "service": c["name"], "value": c["status"]})
-        alerts += restart_alerts()
-    except Exception as e:          # docker briefly unavailable: metric-based alerts still count
-        print(f"(container checks skipped this poll: {str(e)[:100]})")
+        try:
+            alerts += restart_alerts(cs)
+        except Exception:
+            pass
     alerts += resource_alerts()
     return alerts
+
+
+def _baseline_partial() -> bool:
+    """True while the whole demo started less than 35 min ago: its baseline window is only partly filled, so the
+    baseline rate reads low and normal traffic would look like a spike. Only asked when a spike is seen."""
+    try:
+        _, stack, now = observe._starts()
+        return stack is not None and now.timestamp() - stack < BASELINE_SPAN_S
+    except Exception:
+        return False
 
 
 _UNIT_S = {"second": 1, "minute": 60, "hour": 3600, "day": 86400, "week": 604800}
@@ -62,10 +106,10 @@ def _uptime_s(status: str):
     return int(m.group(3)) * _UNIT_S.get(m.group(4), 1)
 
 
-def restart_alerts() -> list[dict]:
+def restart_alerts(cs: list | None = None) -> list[dict]:
     """A container that just (re)started on its own while the rest of the demo has been up for a while: a crash
     or crash loop. Cheap (docker ps only); restarts done by our own Action API are not alerts."""
-    rows = [(c["name"], _uptime_s(c["status"])) for c in containers.list_containers()]
+    rows = [(c["name"], _uptime_s(c["status"])) for c in (cs if cs is not None else containers.list_containers())]
     ups = sorted(u for _, u in rows if u is not None)
     if len(ups) < 5 or ups[len(ups) // 2] < 15 * 60:        # the demo itself just started: nothing to compare with
         return []

@@ -43,15 +43,16 @@ ALLOWLIST = {
                       "check": lambda p: ex.scale_service(p.get("service"), p.get("replicas")),
                       "run": lambda p: ex.scale_service(p.get("service"), p.get("replicas"))},
 }
+REPO_STOP = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "STOP")   # <repo>/STOP
 MAX_EXECUTES_PER_10_MIN = int(os.getenv("ACTION_API_MAX_PER_10MIN", "5"))
 TARGET_COOLDOWN_S = int(os.getenv("ACTION_API_COOLDOWN_S", "60"))
 
 
 class State:
-    def __init__(self, token: str, audit_path: str, kill_file: str = "STOP"):
+    def __init__(self, token: str, audit_path: str, kill_file: str | None = None):
         self.token = token
         self.audit_path = audit_path
-        self.kill_file = kill_file
+        self.kill_file = kill_file or REPO_STOP    # the same STOP file the agent checks, wherever either was started
         self.kill = False
         self.lock = threading.Lock()          # one change at a time
         self.recent = deque()                 # execute timestamps (rate limit)
@@ -60,7 +61,7 @@ class State:
         os.makedirs(os.path.dirname(audit_path) or ".", exist_ok=True)
 
     def killed(self) -> bool:
-        return self.kill or os.path.exists(self.kill_file)
+        return self.kill or os.path.exists(self.kill_file) or os.path.exists("STOP")
 
     def audit(self, row: dict) -> None:
         row = {"t": time.strftime("%Y-%m-%d %H:%M:%S"), **row}
@@ -137,6 +138,10 @@ def execute(st, action, params, rec, entry, cooldown=True):
         st.audit({**rec, "status": "refused", "why": "kill switch on"})
         return 423, {"status": "refused", "why": "kill switch is on"}
     with st.lock:
+        # A request may have waited behind another action while STOP/the kill switch changed.
+        if st.killed():
+            st.audit({**rec, "status": "refused", "why": "kill switch on"})
+            return 423, {"status": "refused", "why": "kill switch is on"}
         now = time.time()
         while st.recent and now - st.recent[0] > 600:
             st.recent.popleft()

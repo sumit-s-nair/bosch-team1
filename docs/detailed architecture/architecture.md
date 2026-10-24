@@ -42,7 +42,7 @@ flowchart LR
     subgraph Agent["Our agent (Python, local)"]
         GW["Safe-read gateway<br/>flag filter, field scrubbing,<br/>docker and file limits"]
         DET[Detector<br/>rule-based alerts] --> SWEEP[Fixed sweep<br/>overview, containers, restarts]
-        SWEEP --> LOOP[Qwen3 8B via Ollama<br/>picks follow-up tools<br/>adaptive step and time cap]
+        SWEEP --> LOOP[Qwen3 8B via Ollama<br/>picks follow-up tools<br/>step and time cap]
         LOOP <--> TOOLS[Read-only tools<br/>summaries + evidence ids<br/>incl. deploy history]
         LOOP --> DIAG[Diagnosis JSON]
         DIAG --> VAL["Evidence validator<br/>ids exist, values match,<br/>coverage-aware confidence"]

@@ -16,9 +16,11 @@ from agent.incident import Incident
 MAX_ROUNDS = 3      # re-investigate after a fix that ran but did not recover (escalation ladder)
 
 
-def run(mode="now", ask_fn=None, client_factory=None, validate_kw=None, on_executed=None):
+def run(mode="now", ask_fn=None, client_factory=None, validate_kw=None, on_executed=None, incident=None):
+    """ask_fn answers every human question (terminal input by default; the agent server passes the browser's).
+    incident: an already-created Incident, so a caller (agent/server.py) knows the run id before the run starts."""
     ask_fn = ask_fn or (lambda prompt="": input(prompt))
-    inc = Incident()
+    inc = incident or Incident()
 
     # DETECT
     if mode == "watch":
@@ -77,7 +79,8 @@ def run(mode="now", ask_fn=None, client_factory=None, validate_kw=None, on_execu
                 if ok:
                     break
                 inc.event("fix", f"cannot act: {why}")
-                ans = ask_fn(f"{why}. Start it and press Enter to check again, or type 'skip' to escalate without acting: ")
+                fix_it = "Release the kill switch" if "kill switch" in why else "Start it"
+                ans = ask_fn(f"{why}. {fix_it} and press Enter to check again, or type 'skip' to escalate without acting: ")
                 if ans.strip().lower() == "skip":
                     break
                 ok, why = client.health()
@@ -109,7 +112,9 @@ def run(mode="now", ask_fn=None, client_factory=None, validate_kw=None, on_execu
                     on_executed(p)
                 inc.event("validate", "re-checking alert signals")
                 target = p["params"].get("service") or (rc.get("service") if p["action"] != "throttle_load_generator" else None)
-                validation = verify.recovered(alerts, target=target, **(validate_kw or {}))
+                # throttling the load generator lowers traffic on purpose: a traffic_drop afterwards is expected
+                expected = ("traffic_drop",) if p["action"] == "throttle_load_generator" else ()
+                validation = verify.recovered(alerts, target=target, expected=expected, **(validate_kw or {}))
                 inc.save(f"validation{sfx}.json", validation)
                 partial = not validation["recovered"] and validation.get("target_recovered")
                 inc.event("validate", "recovered" if validation["recovered"] else

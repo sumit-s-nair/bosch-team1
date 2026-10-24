@@ -3,7 +3,8 @@
 - ALLOWLIST: the only actions that exist (from the brief: restart a service, toggle a feature flag,
   throttle the load generator, scale a service on Kubernetes).
 - plan(): maps the diagnosis category to an action. No match -> no action, escalate.
-- Kill switch: create a file named STOP in the repo root (or set AGENT_KILL=1) and nothing executes.
+- Kill switch: create a file named STOP in the repo root (or set AGENT_KILL=1) and nothing executes. The repo root is
+  found from this file, so it works whatever folder the agent was started from; STOP in that folder also counts.
 - Every call (and every refusal) is appended to the incident's actions.jsonl audit log.
 - The agent never changes the system itself: it sends the approved plan to the Action API, which re-checks
   everything (allowlist, approval, kill switch, rate limits) and keeps its own audit log.
@@ -12,6 +13,7 @@
 import json
 import os
 import time
+from pathlib import Path
 
 import requests
 
@@ -70,8 +72,11 @@ RUNBOOK = {
 NOT_RESTARTABLE = {"load-generator", "otel-collector", "prometheus", "jaeger", "opensearch", "grafana", "flagd", "flagd-ui"}
 
 
+KILL_FILE = Path(__file__).resolve().parents[1] / "STOP"     # <repo>/STOP, independent of the working directory
+
+
 def kill_switch_on() -> bool:
-    return os.path.exists("STOP") or os.getenv("AGENT_KILL") == "1"
+    return os.path.exists(KILL_FILE) or os.path.exists("STOP") or os.getenv("AGENT_KILL") == "1"
 
 
 def _same(a, b) -> bool:

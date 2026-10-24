@@ -73,10 +73,39 @@ python -m agent.run --watch          # wait for an alert, then investigate
 ```
 Each run writes `runs/<timestamp>/diagnosis.json` (summary, root cause, confidence, cited evidence, tool trail).
 
+## 7. Dashboard (UI)
+The dashboard (`ui/dashboard`, Next.js) shows every run live and is where a human answers the agent.
+It talks only to the agent server; it never calls the Action API and never sees `ACTION_API_TOKEN`.
+Approvals stay in the agent: the pipeline asks its questions (approve, a value only a human may name,
+approver name, Action API down, rollback, acknowledge escalation) and waits until the dashboard answers.
+
+Four terminals, all from the repo root unless noted:
+```powershell
+python -m action_api.server                      # 1. Action API (the only thing that changes the demo)
+python -m agent.server                           # 2. agent server on http://127.0.0.1:8000
+cd ui/dashboard; copy .env.example .env.local    # 3. once
+npx pnpm@10.19.0 install --frozen-lockfile                              #    once (or `pnpm install` if pnpm is installed)
+npx pnpm@10.19.0 dev                                  #    dashboard on http://localhost:3000
+```
+From `ui/dashboard`, run `pnpm typecheck` before the demo. Production builds enforce TypeScript errors.
+The project pins pnpm 10.19.0. Use `pnpm build`; if a restricted environment blocks Turbopack worker ports,
+`pnpm exec next build --webpack` is the supported alternative.
+
+Start a run from the dashboard (**Investigate now** / **Watch**). The terminal CLI (`python -m agent.run`)
+still works on its own, without the dashboard.
+
+| Agent server endpoint | What it does |
+|---|---|
+| `GET /api/health` | server up, current run, pending question, Action API reachable + kill state |
+| `GET /api/incidents`, `GET /api/incidents/<id>` | runs in `runs/` with status; one run's alert, diagnosis, plan (incl. dry run), approval, validation, rollback, report, timeline |
+| `POST /api/run {mode: now\|watch}` | start the pipeline in a background thread (one run at a time) |
+| `GET /api/pending`, `POST /api/answer {id, answer}` | the agent's current question, and the human's answer to it |
+| `GET/POST /api/kill {on}` | Action API kill switch, proxied server-side with the token |
+
 ## How it works
-1. **Detect** (`agent/detector.py`) — rule-based: server error rate > 5%, p95 > 3x baseline, traffic drop, container stopped/unhealthy; must hold for 2 polls.
+1. **Detect** (`agent/detector.py`) — rule-based: server error rate > 5%, p95 > 3x baseline, traffic drop, traffic spike (> 3x baseline and ≥ 1 rps; skipped in the first 35 min after the whole demo starts, while the baseline is still filling), container stopped/unhealthy; must hold for 2 polls.
 2. **Sweep** — always runs service overview, container health and recent restarts first.
-3. **Investigate** (`agent/brain.py`) — Qwen picks up to 6 follow-up tools from `agent/tools/observe.py`. Tools return short summaries computed in code, each fact tagged with an evidence id `[E#]`.
+3. **Investigate** (`agent/brain.py`) — Qwen picks follow-up tools from `agent/tools/observe.py`: up to 8 turns, and no new turn after 5 minutes (`AGENT_TOOL_BUDGET_S`; hitting the limit is noted in the diagnosis). Tools return short summaries computed in code, each fact tagged with an evidence id `[E#]`.
 4. **Diagnose** — the model returns JSON: root cause, category, confidence, cited evidence ids.
 5. **Validate** — the JSON is schema-checked (one retry). Cited ids not produced by a tool are dropped. Confidence is capped if evidence is missing, if none of it is abnormal by code thresholds, or if it doesn't mention the blamed service. Below 0.7 the agent escalates; with no alert and nothing abnormal it reports `no_incident`.
 
@@ -108,7 +137,9 @@ agent/
   schema.py              JSON-schema check of the diagnosis (diagnosis.schema.json, TODO-ALIGN with organiser schema)
   day2_stubs.py          Day 2 interfaces: propose fix, approval, act + verify
   run.py                 CLI entry point
+  server.py              agent server for the dashboard (runs, approvals, kill-switch proxy)
 scripts/                 start-demo.ps1, check_setup.py, discover.py, eyes.py
+ui/dashboard/            Next.js on-call console (talks only to agent/server.py)
 tests/                   offline tests (network blocked)
 docs/architecture.md     one-page architecture
 ```
@@ -117,7 +148,20 @@ docs/architecture.md     one-page architecture
 - All telemetry tools are read-only: docker access is limited to `ps`/`inspect`/`stats`; HTTP POST is only allowed to OpenSearch `_search`; redirects are refused.
 - Any URL touching feature-flag sources (flagd, flag UI/API, ports 8013/8016) is refused in `agent/tools/http.py`.
 - `agent/flagguard.py` drops flagd's own spans and logs, client calls to flagd, flag-UI gateway access logs, and redacts any log or error text mentioning flags. `tests/test_flag_leaks.py` proves each route is blocked.
-- System changes only via the Action API and only after human approval (Day 2, WIP).
+- System changes only via the Action API and only after human approval.
+- After a `throttle_load_generator` fix, a traffic drop is the expected effect, not a new incident: verification records it under `expected_from_fix` and does not count it against recovery.
+
+### Kill switch (two ways, either one blocks every fix)
+| Switch | How to turn it on | Who checks it |
+|---|---|---|
+| `STOP` file | `New-Item STOP` in the repo root (or set `AGENT_KILL=1` for the agent) | **Both** the agent (before approval and before every action) and the Action API (on every execute/undo). The repo root is found from the code, so it works whatever folder either was started from; a `STOP` in the current folder also counts. |
+| Action API switch | dashboard kill toggle, or `POST /kill {"on": true}` to the Action API | The Action API (refuses with HTTP 423), and the agent's pre-approval health check (the run escalates with "kill switch is on" instead of asking for approval). |
+
+Release: delete `STOP`; turn the toggle off (`POST /kill {"on": false}`). The toggle cannot clear a `STOP` file, so the dashboard keeps showing ON until the file is gone. The kill switch blocks new actions; the agent keeps investigating and reports, it just cannot change anything.
+
+Demo that either one blocks a fix:
+1. `STOP` (no Docker needed; uses the local LLM): `New-Item STOP`, then `python -m eval.run_offline --pipeline container_stopped`. The agent diagnoses and proposes `restart_service payment`, but never asks for approval: outcome "not fixed: kill switch on", no action is sent (no `actions.jsonl`). `Remove-Item STOP`.
+2. Action API switch (live): start the Action API, turn on the dashboard kill toggle, click **Investigate now**. When the agent has a fix, it asks "Action API kill switch is on. Release the kill switch and press Enter to check again, or type 'skip'". Answer `skip`: the run escalates without acting, and the Action API audit log (`runs/action_api_audit.jsonl`) shows no execute.
 
 
 ## Known limitations
@@ -129,3 +173,14 @@ Traffic breakdowns in `service_overview(window="5m", service=None, group_by="rou
 `memory_growing` (>20% growth) and per-route `spike` (>3x baseline) are plain numerical hints, not incident conclusions. Values are returned with evidence IDs; list output is capped and can be shortened further to stay below roughly 3000 characters. The tool registry has nine tools (`db_health` added).
 
 To verify these extensions against the live demo, run `python -m scripts.check_extensions --service <exact-service-name>` (omit `--service` to discover a service emitting runtime metrics). It prints the actual metric-name list and raw tool outputs, and saves them under `runs/runtime-validation/`. This is a diagnostic script, not an additional agent tool.
+
+## Recovery and approval safeguards
+
+Recovery verification requires active request, error-rate and latency telemetry, a nonempty demo container inventory,
+and observations for the originally affected services or containers. Query failures, missing data and zero traffic
+leave recovery unverified. By default all three polls must be clean; explicit shorter offline runs require all their
+configured polls to be clean. Longer runs require three consecutive clean polls at the end.
+
+Each dashboard question accepts one answer only; duplicate or stale answers return HTTP 409. The Action API
+rechecks its kill switch after acquiring the execution lock so an action waiting behind another cannot ignore a newly
+engaged stop. A kill switch prevents new actions; it does not cancel an executor operation already in progress.

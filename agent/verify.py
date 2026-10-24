@@ -33,23 +33,39 @@ def target_healthy(service: str | None) -> tuple[bool, str]:
     return True, "no errors in the last minute" + (", container running" if c is not None else "")
 
 
-def recovered(original_alerts: list[dict], target: str | None = None, settle_s: int = 60, polls: int = 4,
-              poll_s: int = 20) -> dict:
+def recovered(original_alerts: list[dict], target: str | None = None, settle_s: int = 60, polls: int = 3,
+              poll_s: int = 20, expected: tuple = ()) -> dict:
+    """target: the service the fix acted on. expected: alert types the fix itself causes (throttling the load
+    generator lowers traffic on purpose, so a traffic_drop afterwards is the fix working). A poll whose telemetry is
+    missing never counts as clean. Full recovery needs min(3, polls) clean polls in a row."""
+    if polls < 1 or settle_s < 0 or poll_s < 0:
+        raise ValueError("polls must be positive; delays must be nonnegative")
+    required = min(3, polls)
     time.sleep(settle_s)
     keys = {(a["type"], a["service"]) for a in original_alerts if a.get("type") != "manual"}
-    history = []
+    history, clean = [], 0
     for i in range(polls):
-        now = detector.check()
         ok, why = target_healthy(target) if target else (None, "")
-        history.append({"poll": i + 1, "still_firing": [a for a in now if (a["type"], a["service"]) in keys],
-                        "new_alerts": [a for a in now if (a["type"], a["service"]) not in keys],
-                        "target": target, "target_healthy": ok, "target_detail": why})
+        try:
+            now = detector.check(strict=True, original_alerts=original_alerts)
+            still = [a for a in now if (a["type"], a["service"]) in keys]
+            new = [a for a in now if (a["type"], a["service"]) not in keys and a["type"] not in expected]
+            caused = [a for a in now if (a["type"], a["service"]) not in keys and a["type"] in expected]
+            clean = clean + 1 if not still and not new else 0
+            history.append({"poll": i + 1, "still_firing": still, "new_alerts": new, "expected_from_fix": caused,
+                            "telemetry_valid": True, "target": target, "target_healthy": ok, "target_detail": why})
+        except Exception as exc:
+            clean = 0
+            history.append({"poll": i + 1, "still_firing": [], "new_alerts": [], "telemetry_valid": False,
+                            "error": f"{type(exc).__name__}: {str(exc)[:300]}", "target": target,
+                            "target_healthy": ok, "target_detail": why})
         if i < polls - 1:
             time.sleep(poll_s)
     last2 = history[-2:]
     target_ok = bool(target) and all(h["target_healthy"] for h in last2)
+    valid = [h for h in history if h["telemetry_valid"]]
+    last = valid[-1] if valid else {"still_firing": [], "new_alerts": []}
     # the fix's own service must be healthy; alerts on OTHER services are reported, not counted against the fix
-    others = [a for a in history[-1]["still_firing"] + history[-1]["new_alerts"] if a["service"] != target]
-    alerts_clear = not history[-1]["still_firing"] and not history[-1]["new_alerts"]
-    return {"recovered": (target_ok or not target) and alerts_clear,
-            "target_recovered": target_ok, "other_alerts": others, "polls": history}
+    others = [a for a in last["still_firing"] + last["new_alerts"] if a["service"] != target]
+    return {"recovered": clean >= required and (target_ok or not target), "target_recovered": target_ok,
+            "other_alerts": others, "required_clean_polls": required, "consecutive_clean_polls": clean, "polls": history}
