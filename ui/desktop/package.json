@@ -1,0 +1,13 @@
+{
+  "name": "incident-zero-desktop",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Desktop console for the Incident Zero on-call agent",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron ."
+  },
+  "devDependencies": {
+    "electron": "33.2.1"
+  }
+}

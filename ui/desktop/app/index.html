@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; connect-src 'self'; style-src 'self'; script-src 'self'">
+<title>Incident Zero</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <strong>Incident Zero</strong>
+  <nav id="nav">
+    <a data-view="incidents" class="on">Incidents</a>
+    <a data-view="live">Live system</a>
+    <a data-view="audit">Action log</a>
+  </nav>
+  <span class="grow"></span>
+  <button id="run-now">Investigate now</button>
+  <button id="run-watch">Watch</button>
+  <button id="kill" class="danger">Kill switch</button>
+</header>
+<div id="status" class="statusbar muted">connecting...</div>
+<div id="pending" hidden></div>
+<main id="view-incidents">
+  <aside>
+    <div class="label">Runs</div>
+    <ul id="runs"></ul>
+  </aside>
+  <section class="right">
+    <div class="tabs" id="tabs">
+      <a data-tab="overview" class="on">Overview</a>
+      <a data-tab="conversation">Conversation</a>
+    </div>
+    <div id="detail"><p class="muted">Select a run.</p></div>
+    <div id="conversation" hidden></div>
+  </section>
+</main>
+<main id="view-live" hidden><section class="right" id="live"></section></main>
+<main id="view-audit" hidden><section class="right" id="audit"></section></main>
+<script src="app.js"></script>
+</body>
+</html>
