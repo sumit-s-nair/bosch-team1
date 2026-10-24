@@ -41,3 +41,8 @@ LLM_MODEL = setting('LLM_MODEL', 'qwen3:8b').removeprefix('ollama_chat/').remove
 LLM_API_BASE = (setting('LLM_API_BASE') or setting('LLM_BASE_URL') or 'http://localhost:11434').rstrip('/').removesuffix('/v1')
 LLM_NUM_CTX = int(setting('LLM_NUM_CTX', '16384'))
 LLM_TIMEOUT = int(float(setting('LLM_TIMEOUT', '300')))
+# 'ollama' (local, default) or 'openai' = any OpenAI-compatible hosted API (Gemini, Grok, OpenAI, Groq ...)
+LLM_PROVIDER = setting('LLM_PROVIDER', 'ollama').lower()
+LLM_HOSTED_BASE_URL = setting('LLM_HOSTED_BASE_URL').rstrip('/')
+LLM_HOSTED_MODEL = setting('LLM_HOSTED_MODEL')
+LLM_API_KEY = setting('LLM_API_KEY', alias='GEMINI_API_KEY')

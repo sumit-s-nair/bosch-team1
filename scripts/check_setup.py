@@ -37,12 +37,14 @@ def c_logs():
 def c_llm():
     tool = {"type": "function", "function": {"name": "container_health", "description": "Container states",
                                              "parameters": {"type": "object", "properties": {}, "required": []}}}
-    m = llm.chat([{"role": "user", "content": "Connection test: call container_health with no arguments."}],
-                 tools=[tool], think=False)
+    msgs = [{"role": "user", "content": "Connection test: call container_health with no arguments."}]
+    # test the configured provider itself (no silent fallback), so a bad key or blocked network shows up here
+    m = llm._hosted(msgs, [tool], False, 60) if config.LLM_PROVIDER == "openai" else llm.chat(msgs, tools=[tool], think=False)
     calls = [c["function"]["name"] for c in m.get("tool_calls") or []]
     if "container_health" not in calls:
         raise RuntimeError(f"model answered without the tool call (content={m.get('content', '')[:80]!r})")
-    return {"model": config.LLM_MODEL, "tool_calling": True}
+    model = config.LLM_HOSTED_MODEL if config.LLM_PROVIDER == "openai" else config.LLM_MODEL
+    return {"provider": config.LLM_PROVIDER, "model": model, "tool_calling": True}
 
 
 def main():
