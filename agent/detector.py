@@ -35,11 +35,14 @@ def check() -> list[dict]:
                            "baseline": round(v["base_rps"], 2)})
     alerted = {a["service"] for a in alerts if a["type"] == "error_rate"}
     alerts += [a for a in operation_errors() if a["service"] not in alerted]
-    for c in containers.list_containers():
-        if c["state"] != "running" or "unhealthy" in c["status"] or "Restarting" in c["status"]:
-            alerts.append({"type": "container", "service": c["name"], "value": c["status"]})
+    try:
+        for c in containers.list_containers():
+            if c["state"] != "running" or "unhealthy" in c["status"] or "Restarting" in c["status"]:
+                alerts.append({"type": "container", "service": c["name"], "value": c["status"]})
+        alerts += restart_alerts()
+    except Exception as e:          # docker briefly unavailable: metric-based alerts still count
+        print(f"(container checks skipped this poll: {str(e)[:100]})")
     alerts += resource_alerts()
-    alerts += restart_alerts()
     return alerts
 
 
@@ -134,15 +137,28 @@ def resource_alerts() -> list[dict]:
     return out
 
 
+def key(a: dict) -> tuple:
+    return (a["type"], a["service"], a.get("operation"))
+
+
+def label(a: dict) -> str:
+    return f"{a['type']}:{a['service']}" + (f"/{a['operation']}" if a.get("operation") else "")
+
+
 def wait_for_alert(poll_s: int = 10, confirm: int = 2) -> list[dict]:
     """Block until the same alert key fires on `confirm` consecutive polls."""
     streak: dict = {}
     while True:
-        alerts = check()
-        keys = {(a["type"], a["service"]) for a in alerts}
+        try:
+            alerts = check()
+        except Exception as e:          # a failed poll (docker/prometheus hiccup) must not stop the watch
+            print(time.strftime("%H:%M:%S"), f"poll failed ({type(e).__name__}: {str(e)[:120]}), retrying")
+            time.sleep(poll_s)
+            continue
+        keys = {key(a) for a in alerts}
         streak = {k: streak.get(k, 0) + 1 for k in keys}
-        firing = [a for a in alerts if streak[(a["type"], a["service"])] >= confirm]
-        print(time.strftime("%H:%M:%S"), "alerts:", [f"{a['type']}:{a['service']}" for a in alerts] or "none")
+        firing = [a for a in alerts if streak[key(a)] >= confirm]
+        print(time.strftime("%H:%M:%S"), "alerts:", [label(a) for a in alerts] or "none")
         if firing:
             return firing
         time.sleep(poll_s)

@@ -191,3 +191,36 @@ def test_other_problems_are_listed_for_the_human(monkeypatch):
     rep, d = run(monkeypatch, "combined_payment_and_cache", ["no"])
     assert any("valkey-cart" in o for o in rep["other_problems"]), rep["other_problems"]
     assert "Other problems seen" in open(f"{d}/report.md").read()
+
+
+def test_tool_budget_caps_parallel_and_total_calls(monkeypatch):
+    from agent import brain
+    many = {"role": "assistant", "content": "", "tool_calls": [
+        {"function": {"name": "service_operations", "arguments": {"service": s}}} for s in ("checkout", "payment", "quote", "shipping")]}
+    replies = iter([many] * 6 + [{"role": "assistant", "content": json.dumps({
+        "summary": "s", "root_cause": {"service": "payment", "category": "service_error", "description": "d"},
+        "confidence": 0.5, "evidence": []})}])
+    monkeypatch.setattr(llm, "chat", lambda *a, **k: next(replies))
+    offline.install(scenarios.get("payment_failure"))
+    d = brain.investigate([{"type": "error_rate", "service": "payment"}], log=lambda *a: None)
+    llm_calls = [t for t in d["tool_trail"] if t["by"] == "llm"]
+    assert len(llm_calls) == brain.MAX_TOOL_CALLS
+
+
+def test_docker_failure_does_not_crash_the_run(monkeypatch):
+    from agent.tools import containers
+    model_says(monkeypatch, "payment", "service_error")
+    offline.install(scenarios.get("payment_failure"))
+    def broken():
+        raise containers.DockerError("docker ps failed after 3 tries: error during connect")
+    monkeypatch.setattr(run_offline.offline, "install", lambda sc: None)     # keep the broken docker in place
+    monkeypatch.setattr(containers, "list_containers", broken)
+    rep, _ = run(monkeypatch, "payment_failure", ["no"])
+    assert rep["root_cause"]["service"] == "payment"
+
+
+def test_investigation_crash_escalates_instead_of_exiting(monkeypatch):
+    from agent import brain
+    monkeypatch.setattr(brain, "investigate", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
+    rep, _ = run(monkeypatch, "payment_failure", [""])
+    assert rep["outcome"] == "escalated to human" and "boom" in rep["root_cause"]["description"]

@@ -1,13 +1,30 @@
 """Read-only Docker health on the demo network; never reads config or env."""
 import json
 import subprocess
+import time
 from agent import config
 
 
+class DockerError(RuntimeError):
+    pass
+
+
 def _docker(*args):
+    """Read-only docker call with 2 retries: Docker Desktop occasionally fails a call under load."""
     if not args or args[0] not in ('ps', 'inspect', 'stats'):
         raise ValueError('Docker operation is not allowlisted')
-    return subprocess.run(['docker', *args], capture_output=True, text=True, timeout=config.http_timeout(), check=True).stdout
+    err = ''
+    for attempt in range(3):
+        try:
+            r = subprocess.run(['docker', *args], capture_output=True, text=True, timeout=config.http_timeout())
+        except subprocess.TimeoutExpired:
+            err = 'timed out'
+        else:
+            if r.returncode == 0:
+                return r.stdout
+            err = (r.stderr or r.stdout).strip()[:200]
+        time.sleep(1 + attempt)
+    raise DockerError(f'docker {args[0]} failed after 3 tries: {err}')
 
 
 def list_containers():

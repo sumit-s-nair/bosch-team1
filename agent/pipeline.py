@@ -27,7 +27,7 @@ def run(mode="now", ask_fn=None, client_factory=None, validate_kw=None, on_execu
     else:
         alerts = detector.check() or [{"type": "manual", "service": "unknown", "value": "operator page"}]
     inc.save("alert.json", alerts)
-    inc.event("detect", f"{len(alerts)} alert(s): " + ", ".join(f"{a['type']}:{a['service']}" for a in alerts))
+    inc.event("detect", f"{len(alerts)} alert(s): " + ", ".join(detector.label(a) for a in alerts))
 
     client = (client_factory or actions.ActionClient)(inc)
     rounds, tried, context = [], [], ""
@@ -37,7 +37,14 @@ def run(mode="now", ask_fn=None, client_factory=None, validate_kw=None, on_execu
 
         # INVESTIGATE
         inc.event("investigate", "sweep + LLM tool loop started" + (f" (round {rnd}, after a fix that did not recover)" if rnd > 1 else ""))
-        diag = brain.investigate(alerts, log=lambda *a: None, context=context)
+        try:
+            diag = brain.investigate(alerts, log=lambda *a: None, context=context)
+        except Exception as e:      # never crash mid-incident: escalate with what went wrong
+            inc.event("investigate", f"investigation failed: {type(e).__name__}: {str(e)[:200]}")
+            diag = {"summary": f"Investigation failed ({type(e).__name__}); escalating to a human.",
+                    "root_cause": {"service": "unknown", "category": "unknown", "description": str(e)[:300]},
+                    "confidence": 0.0, "evidence": [], "decision": "escalate", "tool_trail": [],
+                    "validation_notes": [f"investigation error: {str(e)[:300]}"], "alerts": alerts, "ledger": []}
         inc.save(f"diagnosis{sfx}.json", diag)
         rc = diag.get("root_cause", {})
         inc.event("investigate", f"{rc.get('service')} / {rc.get('category')} conf={diag['confidence']} -> {diag['decision']}"
@@ -48,6 +55,7 @@ def run(mode="now", ask_fn=None, client_factory=None, validate_kw=None, on_execu
         if not p and diag["decision"] == "propose_fix" and tried:
             inc.event("investigate", "every fix the runbook offers for this was already tried: escalating")
             diag["decision"] = "escalate"
+        check = {}
         if p:   # the Action API's read-only dry run: if this fix is impossible (e.g. no related feature is on), try the other rung
             check = client.dry_run(p)
             if check.get("status") == "refused":
@@ -55,10 +63,12 @@ def run(mode="now", ask_fn=None, client_factory=None, validate_kw=None, on_execu
                 alt = actions.fallback(p["action"], p["params"])
                 if alt and not any(actions._same(alt, t) for t in tried):
                     p = {**p, "action": alt["action"], "params": alt["params"], "reason": alt["note"] + p["reason"]}
+                    check = client.dry_run(p)
                 else:
                     diag["decision"], p = "escalate", None
                     diag.setdefault("validation_notes", []).append(f"no possible fix: {check.get('why')}")
-        preview = client.preview(p) if p else None
+        preview = (f"{p['action']}({', '.join(f'{k}={v}' for k, v in p['params'].items())}) -> "
+                   f"{(check if check.get('status') == 'dry_run' else client.dry_run(p)).get('would_do', '')}") if p else None
         if p:
             inc.save(f"plan{sfx}.json", {**p, "dry_run_preview": preview})
             inc.event("investigate", f"proposed {p['action']} {p['params']}")
