@@ -1,27 +1,37 @@
-"""Model client. Two providers, same interface (the rest of the agent only sees Ollama-shaped messages):
-  LLM_PROVIDER=ollama   local Ollama /api/chat (default; Qwen3 8B, no data leaves the laptop)
-  LLM_PROVIDER=openai   any OpenAI-compatible hosted API: Gemini, Grok, OpenAI, Groq ... (LLM_HOSTED_BASE_URL,
-                        LLM_HOSTED_MODEL, LLM_API_KEY). Faster and stronger; needs network; declare it in the team form.
-If the hosted call fails and LLM_FALLBACK_TO_LOCAL=1, the call is retried on local Ollama.
+"""Model client with a provider chain (the rest of the agent only sees Ollama-shaped messages).
+LLM_CHAIN=groq,gemini,xai,local (default): each hosted provider is used only if its key is in .env
+(GROQ_API_KEY, GEMINI_API_KEY, XAI_API_KEY); 'local' = Ollama/Qwen on this laptop. The first provider that
+answers wins, so a busy or rate-limited free tier falls through to the next. Declare hosted models in the team form.
 """
 import json
+import time
 
 import requests
 
 from agent import config
 
 
+last_provider = None      # which provider answered the last call (shown in logs/reports)
+
+
 def chat(messages: list[dict], tools: list[dict] | None = None, think: bool = True,
          json_mode: bool = False, timeout: int | None = None) -> dict:
-    """Returns the assistant message: {"role", "content", "thinking"?, "tool_calls"?: [{"function": {"name", "arguments": {...}}}]}"""
+    """Returns the assistant message: {"role", "content", "thinking"?, "tool_calls"?: [{"function": {"name", "arguments": {...}}}]}
+    Tries each provider in config.llm_chain() in order; the first that answers wins."""
+    global last_provider
     timeout = timeout or config.LLM_TIMEOUT
-    if config.LLM_PROVIDER == "openai":
+    errors = []
+    for pr in config.llm_chain():
         try:
-            return _hosted(messages, tools, json_mode, timeout)
-        except Exception:
-            if config.setting("LLM_FALLBACK_TO_LOCAL") != "1":
-                raise
-    return _ollama(messages, tools, think, json_mode, timeout)
+            if pr["name"] == "local":
+                out = _ollama(messages, tools, think, json_mode, timeout)
+            else:
+                out = _hosted(messages, tools, json_mode, min(timeout, 90), pr)
+            last_provider = f"{pr['name']}:{pr['model']}"
+            return out
+        except Exception as e:
+            errors.append(f"{pr['name']}: {str(e)[:160]}")
+    raise RuntimeError("every model provider failed: " + " | ".join(errors))
 
 
 # ------------------------------------------------------------------ local Ollama
@@ -76,16 +86,18 @@ def from_openai(msg: dict) -> dict:
     return out
 
 
-def _hosted(messages, tools, json_mode, timeout):
-    if not (config.LLM_HOSTED_BASE_URL and config.LLM_HOSTED_MODEL and config.LLM_API_KEY):
-        raise RuntimeError("LLM_PROVIDER=openai needs LLM_HOSTED_BASE_URL, LLM_HOSTED_MODEL and LLM_API_KEY in .env")
-    body = {"model": config.LLM_HOSTED_MODEL, "messages": to_openai(messages), "temperature": 0.1}
+def _hosted(messages, tools, json_mode, timeout, pr):
+    body = {"model": pr["model"], "messages": to_openai(messages), "temperature": 0.1}
     if tools:
         body["tools"] = tools
     if json_mode:
         body["response_format"] = {"type": "json_object"}
-    r = requests.post(f"{config.LLM_HOSTED_BASE_URL}/chat/completions", json=body, timeout=timeout,
-                      headers={"Authorization": f"Bearer {config.LLM_API_KEY}"})
+    for attempt in range(3):     # free tier: 503 "high demand" / 429 rate limit are usually brief
+        r = requests.post(f"{pr['base']}/chat/completions", json=body, timeout=timeout,
+                          headers={"Authorization": f"Bearer {pr['key']}"})
+        if r.status_code not in (429, 503) or attempt == 2:
+            break
+        time.sleep(2 * (attempt + 1))
     if r.status_code >= 400:
-        raise RuntimeError(f"hosted LLM {r.status_code}: {r.text[:300]}")
+        raise RuntimeError(f"{pr['name']} {r.status_code}: {r.text[:300]}")
     return from_openai(r.json()["choices"][0]["message"])

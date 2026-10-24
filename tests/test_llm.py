@@ -25,9 +25,25 @@ def test_answer_from_openai_back_to_agent_shape():
                                     "tool_calls": [{"id": "x1", "function": {"name": "db_health", "arguments": {}}}]}
 
 
-def test_hosted_failure_falls_back_to_local(monkeypatch):
-    monkeypatch.setattr(config, "LLM_PROVIDER", "openai")
-    monkeypatch.setenv("LLM_FALLBACK_TO_LOCAL", "1")
-    monkeypatch.setattr(llm, "_hosted", lambda *a: (_ for _ in ()).throw(RuntimeError("no network")))
-    monkeypatch.setattr(llm, "_ollama", lambda *a: {"role": "assistant", "content": "local"})
-    assert llm.chat([{"role": "user", "content": "x"}])["content"] == "local"
+def test_chain_falls_through_to_the_next_provider(monkeypatch):
+    monkeypatch.setattr(config, "llm_chain", lambda: [{"name": "groq", "model": "m1", "base": "b", "key": "k"},
+                                                     {"name": "gemini", "model": "m2", "base": "b", "key": "k"},
+                                                     {"name": "local", "model": "qwen"}])
+    calls = []
+
+    def hosted(messages, tools, json_mode, timeout, pr):
+        calls.append(pr["name"])
+        if pr["name"] == "groq":
+            raise RuntimeError("429 rate limited")
+        return {"role": "assistant", "content": "from " + pr["name"]}
+    monkeypatch.setattr(llm, "_hosted", hosted)
+    assert llm.chat([{"role": "user", "content": "x"}])["content"] == "from gemini"
+    assert calls == ["groq", "gemini"] and llm.last_provider == "gemini:m2"
+
+
+def test_chain_only_uses_providers_with_keys(monkeypatch):
+    for k in ("GROQ_API_KEY", "GEMINI_API_KEY", "XAI_API_KEY"):
+        monkeypatch.delenv(k, raising=False)
+    monkeypatch.setenv("GROQ_API_KEY", "g")
+    monkeypatch.setenv("LLM_CHAIN", "groq,gemini,local")
+    assert [p["name"] for p in config.llm_chain()] == ["groq", "local"]

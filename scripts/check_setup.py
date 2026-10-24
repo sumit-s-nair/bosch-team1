@@ -38,13 +38,18 @@ def c_llm():
     tool = {"type": "function", "function": {"name": "container_health", "description": "Container states",
                                              "parameters": {"type": "object", "properties": {}, "required": []}}}
     msgs = [{"role": "user", "content": "Connection test: call container_health with no arguments."}]
-    # test the configured provider itself (no silent fallback), so a bad key or blocked network shows up here
-    m = llm._hosted(msgs, [tool], False, 60) if config.LLM_PROVIDER == "openai" else llm.chat(msgs, tools=[tool], think=False)
-    calls = [c["function"]["name"] for c in m.get("tool_calls") or []]
-    if "container_health" not in calls:
-        raise RuntimeError(f"model answered without the tool call (content={m.get('content', '')[:80]!r})")
-    model = config.LLM_HOSTED_MODEL if config.LLM_PROVIDER == "openai" else config.LLM_MODEL
-    return {"provider": config.LLM_PROVIDER, "model": model, "tool_calling": True}
+    report, ok_any = {}, False
+    for pr in config.llm_chain():          # test each provider on its own, so a bad key or busy model shows up
+        try:
+            m = llm._ollama(msgs, [tool], False, False, 120) if pr["name"] == "local" else llm._hosted(msgs, [tool], False, 60, pr)
+            good = "container_health" in [c["function"]["name"] for c in m.get("tool_calls") or []]
+            report[f"{pr['name']}:{pr['model']}"] = "OK" if good else "answered without the tool call"
+            ok_any |= good
+        except Exception as e:
+            report[f"{pr['name']}:{pr['model']}"] = f"FAILED {str(e)[:120]}"
+    if not ok_any:
+        raise RuntimeError(json.dumps(report))
+    return report
 
 
 def main():
