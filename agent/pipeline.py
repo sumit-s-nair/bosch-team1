@@ -50,7 +50,7 @@ def run(mode="now", ask_fn=None, client_factory=None, validate_kw=None, on_execu
     inc.event("human", appr["reason"])
 
     # FIX + VALIDATE
-    result = validation = None
+    result = validation = rollback = None
     if p and appr["approved"]:
         result = client.execute(p, appr["by"])
         inc.event("fix", f"{p['action']} -> {result['status']}", **{k: v for k, v in result.items() if k != 'status'})
@@ -61,8 +61,18 @@ def run(mode="now", ask_fn=None, client_factory=None, validate_kw=None, on_execu
             validation = verify.recovered(alerts, **(validate_kw or {}))
             inc.save("validation.json", validation)
             inc.event("validate", "recovered" if validation["recovered"] else "NOT recovered -> escalate to human")
+            if not validation["recovered"] and result.get("undo_available") and result.get("call_id"):
+                # a rollback is a change too: it needs its own explicit approval
+                ans = ask_fn(f"Fix did not recover the system. Roll back {p['action']}? type 'yes' to roll back: ").strip().lower()
+                if ans == "yes":
+                    rollback = client.undo(result["call_id"], appr["by"])
+                    inc.event("fix", f"rollback of {result['call_id']} -> {rollback['status']}")
+                else:
+                    rollback = {"status": "declined", "why": "human chose not to roll back"}
+                    inc.event("human", "rollback declined")
+                inc.save("rollback.json", rollback)
 
     # REPORT
-    rep = report.build(inc, alerts, diag, p, appr, result, validation)
+    rep = report.build(inc, alerts, diag, p, appr, result, validation, rollback)
     inc.event("report", f"{rep['outcome']} -> {inc.dir}/report.md")
     return rep

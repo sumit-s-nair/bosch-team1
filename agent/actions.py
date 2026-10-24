@@ -1,10 +1,12 @@
-"""FIX phase: allowlisted runbook actions, executed ONLY through the organisers' Action API, ONLY after approval.
+"""FIX phase: allowlisted runbook actions, executed ONLY through our Action API (action_api/), ONLY after approval.
 
 - ALLOWLIST: the only actions that exist (from the brief: restart a service, toggle a feature flag,
   throttle the load generator, scale a service on Kubernetes).
 - plan(): maps the diagnosis category to an action. No match -> no action, escalate.
 - Kill switch: create a file named STOP in the repo root (or set AGENT_KILL=1) and nothing executes.
 - Every call (and every refusal) is appended to the incident's actions.jsonl audit log.
+- The agent never changes the system itself: it sends the approved plan to the Action API, which re-checks
+  everything (allowlist, approval, kill switch, rate limits) and keeps its own audit log.
 - Until ACTION_API_URL is set, execution is dry-run only.
 """
 import json
@@ -89,19 +91,36 @@ def plan(diag: dict) -> dict | None:
 
 
 class ActionClient:
+    """Talks to the Action API. Local checks here are a second line of defence; the API enforces them again."""
+
     def __init__(self, incident, dry_run: bool | None = None):
         self.inc = incident
         self.url = config.setting("ACTION_API_URL").rstrip("/")
+        self.token = config.setting("ACTION_API_TOKEN")
         self.dry_run = (not self.url) if dry_run is None else dry_run
 
     def _audit(self, row):
         with open(os.path.join(self.inc.dir, "actions.jsonl"), "a", encoding="utf-8") as f:
             f.write(json.dumps({"t": time.strftime("%H:%M:%S"), **row}) + "\n")
 
+    def _post(self, path: str, body: dict) -> dict:
+        try:
+            r = requests.post(f"{self.url}{path}", json=body, timeout=120,
+                              headers={"Authorization": f"Bearer {self.token}"})
+            out = r.json() if r.headers.get("content-type", "").startswith("application/json") else {"body": r.text[:300]}
+            return {"http": r.status_code, **out}
+        except requests.RequestException as e:
+            return {"status": "failed", "why": f"Action API unreachable: {type(e).__name__}"}
+
     def preview(self, p: dict) -> str:
-        """Read-only dry run: what would be sent. Allowed without approval."""
-        return f"{p['action']}({', '.join(f'{k}={v}' for k, v in p['params'].items())}) -> " + \
-               (f"POST {self.url}/actions" if self.url else "Action API not configured (dry run only)")
+        """Read-only dry run, allowed without approval. With the API up, it also validates the target."""
+        call = f"{p['action']}({', '.join(f'{k}={v}' for k, v in p['params'].items())})"
+        if not self.url:
+            return f"{call} -> Action API not configured (dry run only)"
+        if HUMAN_PICKS in p["params"].values():
+            return f"{call} -> Action API (a parameter will be named by the human at approval)"
+        r = self._post("/actions/dry-run", {"action": p["action"], "params": p["params"]})
+        return f"{call} -> Action API dry run: {r.get('status')}" + (f" ({r.get('why')})" if r.get("why") else "")
 
     def execute(self, p: dict, approved_by: str) -> dict:
         if p["action"] not in ALLOWLIST:
@@ -115,9 +134,21 @@ class ActionClient:
         elif self.dry_run:
             r = {"status": "dry_run", "would_send": self.preview(p)}
         else:
-            # TODO-ALIGN: request shape of the organisers' Action API
-            resp = requests.post(f"{self.url}/actions", json={"action": p["action"], **p["params"], "reason": p["reason"]},
-                                 timeout=30)
-            r = {"status": "executed" if resp.ok else "failed", "http": resp.status_code, "body": resp.text[:300]}
+            r = self._post("/actions/execute", {"action": p["action"], "params": p["params"], "reason": p["reason"],
+                                                "approval": {"approved_by": approved_by, "incident_id": self.inc.id}})
+            r.setdefault("status", "failed")
         self._audit({"plan": p, "approved_by": approved_by, **r})
+        return r
+
+    def undo(self, call_id: str, approved_by: str) -> dict:
+        """Roll back a reversible action (throttle, flag). Needs its own human approval."""
+        if kill_switch_on():
+            r = {"status": "refused", "why": "kill switch is on"}
+        elif not approved_by:
+            r = {"status": "refused", "why": "no human approval"}
+        else:
+            r = self._post("/actions/undo", {"call_id": call_id, "approval": {"approved_by": approved_by,
+                                                                                "incident_id": self.inc.id}})
+            r.setdefault("status", "failed")
+        self._audit({"undo_of": call_id, "approved_by": approved_by, **r})
         return r

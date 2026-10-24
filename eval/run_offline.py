@@ -80,6 +80,7 @@ class SimulatedActionClient:
         from agent import actions
         self.real = actions.ActionClient(inc, dry_run=True)
         self.sc = sc
+        self.calls = []
 
     def preview(self, p):
         return self.real.preview(p).replace("Action API not configured (dry run only)", "SIMULATED (offline scenario)")
@@ -88,8 +89,15 @@ class SimulatedActionClient:
         from agent import actions
         if p["action"] not in actions.ALLOWLIST or actions.kill_switch_on() or not approved_by:
             return self.real.execute(p, approved_by)
-        r = {"status": "simulated", "note": "offline scenario; no real system changed"}
+        r = {"status": "simulated", "note": "offline scenario; no real system changed",
+             "call_id": f"sim-{len(self.calls) + 1}", "undo_available": p["action"] in ("toggle_feature_flag", "throttle_load_generator")}
+        self.calls.append(p)
         self.real._audit({"plan": p, "approved_by": approved_by, **r})
+        return r
+
+    def undo(self, call_id, approved_by):
+        r = {"status": "simulated", "note": f"rolled back {call_id} (offline)"}
+        self.real._audit({"undo_of": call_id, "approved_by": approved_by, **r})
         return r
 
 

@@ -2,7 +2,7 @@
 TODO-ALIGN: map report.json to the organisers' JSON schema when it is published."""
 
 
-def build(inc, alerts, diag, p, approval, result, validation) -> dict:
+def build(inc, alerts, diag, p, approval, result, validation, rollback=None) -> dict:
     rc = diag.get("root_cause", {})
     rep = {
         "incident_id": inc.id,
@@ -13,8 +13,8 @@ def build(inc, alerts, diag, p, approval, result, validation) -> dict:
         "decision": diag.get("decision"),
         "evidence": [{"id": e["id"], "kind": e["kind"], "ref": e["ref"], "observed": e["observed"], "why": e["why"]}
                      for e in diag.get("evidence", [])],
-        "action": p, "approval": approval, "action_result": result, "validation": validation,
-        "outcome": _outcome(diag, approval, result, validation),
+        "action": p, "approval": approval, "action_result": result, "validation": validation, "rollback": rollback,
+        "outcome": _outcome(diag, approval, result, validation, rollback),
         "prevention": _prevention(rc),
         "timeline": inc.timeline(),
     }
@@ -26,6 +26,7 @@ def build(inc, alerts, diag, p, approval, result, validation) -> dict:
     md += [f"- [{e['id']}] {e['observed']} — {e['why']}" for e in rep["evidence"]] or ["- none"]
     md += ["", "## Action", f"- Plan: {p}" if p else "- None (escalated)", f"- Approval: {approval}",
            f"- Result: {result}", f"- Recovered: {validation.get('recovered') if validation else 'n/a'}",
+           f"- Rollback: {rollback if rollback else 'n/a'}",
            "", "## Prevention", f"- {rep['prevention']}", "", "## Timeline"]
     md += [f"- {t['t']} {t['phase']}: {t['msg']}" for t in rep["timeline"]]
     with open(f"{inc.dir}/report.md", "w", encoding="utf-8") as f:
@@ -33,7 +34,7 @@ def build(inc, alerts, diag, p, approval, result, validation) -> dict:
     return rep
 
 
-def _outcome(diag, approval, result, validation):
+def _outcome(diag, approval, result, validation, rollback=None):
     if diag.get("decision") == "no_incident":
         return "no incident found"
     if not approval or not approval.get("approved"):
@@ -42,6 +43,8 @@ def _outcome(diag, approval, result, validation):
         return "approved; dry run only (Action API not configured)"
     if validation and validation.get("recovered"):
         return "fixed and verified"
+    if rollback and rollback.get("status") in ("executed", "simulated"):
+        return "fix applied but not recovered: rolled back and escalated"
     return "fix applied but not recovered: escalated"
 
 
