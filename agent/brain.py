@@ -3,12 +3,13 @@ import json
 import re
 import time
 
-from agent import llm
+from agent import config, llm
 from agent.tools import observe
 from agent.evidence import Ledger
 from agent.schema import validate_output
 
-MAX_TOOL_STEPS = 6
+MAX_TOOL_STEPS = 8          # LLM turns after the sweep (a turn may call several tools)
+TOOL_TIME_BUDGET_S = float(config.setting("AGENT_TOOL_BUDGET_S", "300"))   # stop asking for tools after this long
 ACT_CONFIDENCE = 0.7
 CATEGORIES = ["service_error", "dependency_failure", "container_down", "resource_exhaustion",
               "latency_or_network", "traffic_spike", "cache_unavailable", "database_unavailable",
@@ -147,8 +148,13 @@ def investigate(alerts: list[dict], log=print, context: str = "") -> dict:
     ]
     tools = _tool_specs(services)
 
-    # 2) model-driven follow-ups
+    # 2) model-driven follow-ups, capped by steps and by wall-clock time (checked before each LLM turn)
+    limit_note = None
     for step in range(MAX_TOOL_STEPS):
+        if time.time() - t0 > TOOL_TIME_BUDGET_S:
+            limit_note = f"stopped calling tools after {time.time() - t0:.0f}s (time budget {TOOL_TIME_BUDGET_S:.0f}s)"
+            log(f"[limit] {limit_note}\n")
+            break
         msg = _llm(messages, tools)
         calls = msg.get("tool_calls") or []
         if msg.get("thinking"):
@@ -194,6 +200,8 @@ def investigate(alerts: list[dict], log=print, context: str = "") -> dict:
                 "root_cause": {"service": "unknown", "category": "unknown", "description": "no valid diagnosis"},
                 "confidence": 0, "evidence": []}
     diag = validate(diag, L)
+    if limit_note:
+        diag["validation_notes"].append(limit_note)
     real_alerts = [a for a in alerts if a.get("type") != "manual"]
     if not real_alerts and not any(i["anomalous"] for i in L.items.values()):
         diag["decision"] = "no_incident"

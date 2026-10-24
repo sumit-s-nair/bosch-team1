@@ -74,7 +74,7 @@ const post = <T,>(path: string, body: unknown) => api<T>(path, { method: 'POST',
 // No severity in the agent's data: derived from the alert type only (shown with that explanation).
 function severity(alertType?: string): 'SEV-1' | 'SEV-2' | 'SEV-3' {
   if (alertType === 'error_rate' || alertType === 'container') return 'SEV-1'
-  if (alertType === 'latency' || alertType === 'traffic_drop') return 'SEV-2'
+  if (alertType === 'latency' || alertType === 'traffic_drop' || alertType === 'traffic_spike') return 'SEV-2'
   return 'SEV-3'
 }
 function statusTone(status: string): 'red' | 'amber' | 'green' | 'cyan' | 'slate' {

@@ -4,7 +4,10 @@ import time
 from agent import detector
 
 
-def recovered(original_alerts: list[dict], settle_s: int = 60, polls: int = 3, poll_s: int = 20) -> dict:
+def recovered(original_alerts: list[dict], settle_s: int = 60, polls: int = 3, poll_s: int = 20,
+              expected: tuple = ()) -> dict:
+    """expected: alert types the fix itself causes (throttling the load generator lowers traffic on purpose,
+    so a traffic_drop afterwards is the fix working, not a new incident). Recorded per poll, never hidden."""
     if polls < 1 or settle_s < 0 or poll_s < 0:
         raise ValueError("polls must be positive; delays must be nonnegative")
     # The default requires three clean polls. Explicit shorter test/demo runs require all their polls clean.
@@ -16,9 +19,11 @@ def recovered(original_alerts: list[dict], settle_s: int = 60, polls: int = 3, p
         try:
             now = detector.check(strict=True, original_alerts=original_alerts)
             still = [a for a in now if (a["type"], a["service"]) in keys]
-            new = [a for a in now if (a["type"], a["service"]) not in keys]
+            new = [a for a in now if (a["type"], a["service"]) not in keys and a["type"] not in expected]
+            caused = [a for a in now if (a["type"], a["service"]) not in keys and a["type"] in expected]
             clean = clean + 1 if not still and not new else 0
-            history.append({"poll": i + 1, "still_firing": still, "new_alerts": new, "telemetry_valid": True})
+            history.append({"poll": i + 1, "still_firing": still, "new_alerts": new, "expected_from_fix": caused,
+                            "telemetry_valid": True})
         except Exception as exc:
             clean = 0
             history.append({"poll": i + 1, "still_firing": [], "new_alerts": [], "telemetry_valid": False,

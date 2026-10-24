@@ -103,9 +103,9 @@ still works on its own, without the dashboard.
 | `GET/POST /api/kill {on}` | Action API kill switch, proxied server-side with the token |
 
 ## How it works
-1. **Detect** (`agent/detector.py`) — rule-based: server error rate > 5%, p95 > 3x baseline, traffic drop, container stopped/unhealthy; must hold for 2 polls.
+1. **Detect** (`agent/detector.py`) — rule-based: server error rate > 5%, p95 > 3x baseline, traffic drop, traffic spike (> 3x baseline and ≥ 1 rps; skipped in the first 35 min after the whole demo starts, while the baseline is still filling), container stopped/unhealthy; must hold for 2 polls.
 2. **Sweep** — always runs service overview, container health and recent restarts first.
-3. **Investigate** (`agent/brain.py`) — Qwen picks up to 6 follow-up tools from `agent/tools/observe.py`. Tools return short summaries computed in code, each fact tagged with an evidence id `[E#]`.
+3. **Investigate** (`agent/brain.py`) — Qwen picks follow-up tools from `agent/tools/observe.py`: up to 8 turns, and no new turn after 5 minutes (`AGENT_TOOL_BUDGET_S`; hitting the limit is noted in the diagnosis). Tools return short summaries computed in code, each fact tagged with an evidence id `[E#]`.
 4. **Diagnose** — the model returns JSON: root cause, category, confidence, cited evidence ids.
 5. **Validate** — the JSON is schema-checked (one retry). Cited ids not produced by a tool are dropped. Confidence is capped if evidence is missing, if none of it is abnormal by code thresholds, or if it doesn't mention the blamed service. Below 0.7 the agent escalates; with no alert and nothing abnormal it reports `no_incident`.
 
@@ -148,7 +148,20 @@ docs/architecture.md     one-page architecture
 - All telemetry tools are read-only: docker access is limited to `ps`/`inspect`/`stats`; HTTP POST is only allowed to OpenSearch `_search`; redirects are refused.
 - Any URL touching feature-flag sources (flagd, flag UI/API, ports 8013/8016) is refused in `agent/tools/http.py`.
 - `agent/flagguard.py` drops flagd's own spans and logs, client calls to flagd, flag-UI gateway access logs, and redacts any log or error text mentioning flags. `tests/test_flag_leaks.py` proves each route is blocked.
-- System changes only via the Action API and only after human approval (Day 2, WIP).
+- System changes only via the Action API and only after human approval.
+- After a `throttle_load_generator` fix, a traffic drop is the expected effect, not a new incident: verification records it under `expected_from_fix` and does not count it against recovery.
+
+### Kill switch (two ways, either one blocks every fix)
+| Switch | How to turn it on | Who checks it |
+|---|---|---|
+| `STOP` file | `New-Item STOP` in the repo root (or set `AGENT_KILL=1` for the agent) | **Both** the agent (before approval and before every action) and the Action API (on every execute/undo). The repo root is found from the code, so it works whatever folder either was started from; a `STOP` in the current folder also counts. |
+| Action API switch | dashboard kill toggle, or `POST /kill {"on": true}` to the Action API | The Action API (refuses with HTTP 423), and the agent's pre-approval health check (the run escalates with "kill switch is on" instead of asking for approval). |
+
+Release: delete `STOP`; turn the toggle off (`POST /kill {"on": false}`). The toggle cannot clear a `STOP` file, so the dashboard keeps showing ON until the file is gone. The kill switch blocks new actions; the agent keeps investigating and reports, it just cannot change anything.
+
+Demo that either one blocks a fix:
+1. `STOP` (no Docker needed; uses the local LLM): `New-Item STOP`, then `python -m eval.run_offline --pipeline container_stopped`. The agent diagnoses and proposes `restart_service payment`, but never asks for approval: outcome "not fixed: kill switch on", no action is sent (no `actions.jsonl`). `Remove-Item STOP`.
+2. Action API switch (live): start the Action API, turn on the dashboard kill toggle, click **Investigate now**. When the agent has a fix, it asks "Action API kill switch is on. Release the kill switch and press Enter to check again, or type 'skip'". Answer `skip`: the run escalates without acting, and the Action API audit log (`runs/action_api_audit.jsonl`) shows no execute.
 
 
 ## Known limitations

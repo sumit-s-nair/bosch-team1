@@ -26,7 +26,7 @@ from urllib.parse import urlparse
 
 import requests
 
-from agent import config, pipeline
+from agent import actions, config, pipeline
 from agent.incident import Incident
 
 RUN_ID_RE = re.compile(r"^\d{8}-\d{6}$")          # runs/<id> folders the pipeline creates
@@ -37,7 +37,7 @@ def prompt_kind(prompt: str) -> str:
     """What the agent is asking, so the UI can show the right buttons. The full prompt text is always shown."""
     p = prompt.lower()
     for kind, words in (("rollback", "roll back"), ("approve", "approve this action"), ("human_param", "cannot choose"),
-                        ("name", "your name"), ("action_api_down", "start it and press enter"),
+                        ("name", "your name"), ("action_api_down", "press enter to check again"),
                         ("acknowledge", "acknowledge")):
         if words in p:
             return kind
@@ -197,7 +197,7 @@ def health(agent: Agent) -> dict:
             pass
     return {"ok": True, "agent_running": agent.running(), "run_id": agent.run_id, "mode": agent.mode,
             "last_error": agent.error, "pending": agent.pending is not None, "model": config.LLM_MODEL,
-            "action_api": api, "server_time": time.strftime("%Y-%m-%dT%H:%M:%S%z")}
+            "action_api": api, "stop_file": actions.kill_switch_on(), "server_time": time.strftime("%Y-%m-%dT%H:%M:%S%z")}
 
 
 # ------------------------------------------------------------------ routes

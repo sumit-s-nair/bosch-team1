@@ -58,7 +58,8 @@ def run(mode="now", ask_fn=None, client_factory=None, validate_kw=None, on_execu
                 if ok:
                     break
                 inc.event("fix", f"cannot act: {why}")
-                ans = ask_fn(f"{why}. Start it and press Enter to check again, or type 'skip' to escalate without acting: ")
+                fix_it = "Release the kill switch" if "kill switch" in why else "Start it"
+                ans = ask_fn(f"{why}. {fix_it} and press Enter to check again, or type 'skip' to escalate without acting: ")
                 if ans.strip().lower() == "skip":
                     break
                 ok, why = client.health()
@@ -88,7 +89,9 @@ def run(mode="now", ask_fn=None, client_factory=None, validate_kw=None, on_execu
                 if on_executed:
                     on_executed(p)
                 inc.event("validate", "re-checking alert signals")
-                validation = verify.recovered(alerts, **(validate_kw or {}))
+                # throttling the load generator lowers traffic on purpose: a traffic_drop afterwards is expected
+                expected = ("traffic_drop",) if p["action"] == "throttle_load_generator" else ()
+                validation = verify.recovered(alerts, expected=expected, **(validate_kw or {}))
                 inc.save(f"validation{sfx}.json", validation)
                 inc.event("validate", "recovered" if validation["recovered"] else "NOT recovered")
                 if not validation["recovered"] and result.get("undo_available") and result.get("call_id"):

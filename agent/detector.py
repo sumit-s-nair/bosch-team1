@@ -9,6 +9,8 @@ LAT_FACTOR = 3.0            # p95 > 3x baseline ...
 LAT_MIN_MS = 300            # ... and above 300ms
 LAT_ABS_MS = 1500           # fallback when no baseline exists yet
 MIN_RPS = 0.05
+SPIKE_MIN_RPS = 1.0         # traffic spike: > observe.TRAFFIC_SPIKE_RATIO (3x) baseline and at least this many rps
+BASELINE_SPAN_S = 35 * 60   # the baseline window ends 20m ago and is 15m long; a younger demo has a partial baseline
 
 
 def check(strict=False, original_alerts=None) -> list[dict]:
@@ -30,6 +32,7 @@ def check(strict=False, original_alerts=None) -> list[dict]:
                     raise ValueError(f"Recovery unverified: container {service} is missing")
             elif alert.get("type") != "manual" and not observed(health.get(service, {})):
                 raise ValueError(f"Recovery unverified: active telemetry missing for {service}")
+    spikes = []
     for s, v in health.items():
         if v["rps"] >= MIN_RPS and v["err_rate"] is not None and v["err_rate"] >= ERR_THRESHOLD \
                 and v["err_rate"] > 2 * (v["base_err_rate"] or 0):
@@ -45,10 +48,25 @@ def check(strict=False, original_alerts=None) -> list[dict]:
         if v["base_rps"] and v["base_rps"] > 0.2 and v["rps"] < 0.2 * v["base_rps"]:
             alerts.append({"type": "traffic_drop", "service": s, "value": round(v["rps"], 2),
                            "baseline": round(v["base_rps"], 2)})
+        if v["base_rps"] and v["base_rps"] > 0.2 and v["rps"] >= SPIKE_MIN_RPS and v["rps"] > observe.TRAFFIC_SPIKE_RATIO * v["base_rps"]:
+            spikes.append({"type": "traffic_spike", "service": s, "value": round(v["rps"], 2),
+                           "baseline": round(v["base_rps"], 2)})
+    if spikes and not _baseline_partial():
+        alerts += spikes
     for c in cs:
         if c["state"] != "running" or "unhealthy" in c["status"] or "Restarting" in c["status"]:
             alerts.append({"type": "container", "service": c["name"], "value": c["status"]})
     return alerts
+
+
+def _baseline_partial() -> bool:
+    """True while the whole demo started less than 35 min ago: its baseline window is only partly filled, so the
+    baseline rate reads low and normal traffic would look like a spike. Only asked when a spike is seen."""
+    try:
+        _, stack, now = observe._starts()
+        return stack is not None and now.timestamp() - stack < BASELINE_SPAN_S
+    except Exception:
+        return False
 
 
 def wait_for_alert(poll_s: int = 15, confirm: int = 2) -> list[dict]:
