@@ -231,6 +231,7 @@ def investigate(alerts: list[dict], log=print, context: str = "") -> dict:
         diag["decision"] = "no_incident"
         diag["validation_notes"].append("no alert fired and no tool found anything abnormal")
     diag["other_problems"] = other_problems(diag, L)
+    diag["model"] = llm.last_provider
     diag["alerts"] = alerts
     diag["tool_trail"] = trail
     diag["investigation_seconds"] = round(time.time() - t0, 1)

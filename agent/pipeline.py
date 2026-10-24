@@ -40,7 +40,8 @@ def run(mode="now", ask_fn=None, client_factory=None, validate_kw=None, on_execu
         diag = brain.investigate(alerts, log=lambda *a: None, context=context)
         inc.save(f"diagnosis{sfx}.json", diag)
         rc = diag.get("root_cause", {})
-        inc.event("investigate", f"{rc.get('service')} / {rc.get('category')} conf={diag['confidence']} -> {diag['decision']}",
+        inc.event("investigate", f"{rc.get('service')} / {rc.get('category')} conf={diag['confidence']} -> {diag['decision']}"
+                  f" ({diag.get('investigation_seconds')}s, model {diag.get('model') or 'none'})",
                   tools=[t["tool"] for t in diag["tool_trail"]])
 
         p = actions.plan(diag, tried)
