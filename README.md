@@ -73,6 +73,31 @@ python -m agent.run --watch          # wait for an alert, then investigate
 ```
 Each run writes `runs/<timestamp>/diagnosis.json` (summary, root cause, confidence, cited evidence, tool trail).
 
+## 7. Dashboard (UI)
+The dashboard (`ui/dashboard`, Next.js) shows every run live and is where a human answers the agent.
+It talks only to the agent server; it never calls the Action API and never sees `ACTION_API_TOKEN`.
+Approvals stay in the agent: the pipeline asks its questions (approve, a value only a human may name,
+approver name, Action API down, rollback, acknowledge escalation) and waits until the dashboard answers.
+
+Four terminals, all from the repo root unless noted:
+```powershell
+python -m action_api.server                      # 1. Action API (the only thing that changes the demo)
+python -m agent.server                           # 2. agent server on http://127.0.0.1:8000
+cd ui/dashboard; copy .env.example .env.local    # 3. once
+npx pnpm@10 install                              #    once (or `pnpm install` if pnpm is installed)
+npx pnpm@10 dev                                  #    dashboard on http://localhost:3000
+```
+Start a run from the dashboard (**Investigate now** / **Watch**). The terminal CLI (`python -m agent.run`)
+still works on its own, without the dashboard.
+
+| Agent server endpoint | What it does |
+|---|---|
+| `GET /api/health` | server up, current run, pending question, Action API reachable + kill state |
+| `GET /api/incidents`, `GET /api/incidents/<id>` | runs in `runs/` with status; one run's alert, diagnosis, plan (incl. dry run), approval, validation, rollback, report, timeline |
+| `POST /api/run {mode: now\|watch}` | start the pipeline in a background thread (one run at a time) |
+| `GET /api/pending`, `POST /api/answer {id, answer}` | the agent's current question, and the human's answer to it |
+| `GET/POST /api/kill {on}` | Action API kill switch, proxied server-side with the token |
+
 ## How it works
 1. **Detect** (`agent/detector.py`) — rule-based: server error rate > 5%, p95 > 3x baseline, traffic drop, container stopped/unhealthy; must hold for 2 polls.
 2. **Sweep** — always runs service overview, container health and recent restarts first.
@@ -108,7 +133,9 @@ agent/
   schema.py              JSON-schema check of the diagnosis (diagnosis.schema.json, TODO-ALIGN with organiser schema)
   day2_stubs.py          Day 2 interfaces: propose fix, approval, act + verify
   run.py                 CLI entry point
+  server.py              agent server for the dashboard (runs, approvals, kill-switch proxy)
 scripts/                 start-demo.ps1, check_setup.py, discover.py, eyes.py
+ui/dashboard/            Next.js on-call console (talks only to agent/server.py)
 tests/                   offline tests (network blocked)
 docs/architecture.md     one-page architecture
 ```

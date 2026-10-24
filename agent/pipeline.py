@@ -16,9 +16,11 @@ from agent.incident import Incident
 MAX_ROUNDS = 2      # one re-investigation after a fix that ran but did not recover
 
 
-def run(mode="now", ask_fn=None, client_factory=None, validate_kw=None, on_executed=None):
+def run(mode="now", ask_fn=None, client_factory=None, validate_kw=None, on_executed=None, incident=None):
+    """ask_fn answers every human question (terminal input by default; the agent server passes the browser's).
+    incident: an already-created Incident, so a caller (agent/server.py) knows the run id before the run starts."""
     ask_fn = ask_fn or (lambda prompt="": input(prompt))
-    inc = Incident()
+    inc = incident or Incident()
 
     # DETECT
     if mode == "watch":
