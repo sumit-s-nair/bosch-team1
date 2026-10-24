@@ -101,10 +101,12 @@ def run_pipeline(name):
     print(f"INJECT       offline scenario '{name}': {sc['description']}")
 
     def heal(p):
-        target = p["params"].get("service") or ("load-generator" if p["action"] == "throttle_load_generator" else "")
-        culprits = set(sc["expected"]["services"])
-        if target in culprits or (p["action"] == "throttle_load_generator" and "traffic_spike" in sc["expected"]["categories"]):
-            offline.install(scenarios.get("healthy"))
+        """Heal only if this action really resolves the scenario (expected['fixes']); anything else changes nothing."""
+        target = p["params"].get("service") or "*"
+        for action, t in sc["expected"].get("fixes", []):
+            if p["action"] == action and t in ("*", target):
+                offline.install(scenarios.get("healthy"))
+                return
     rep = pipeline.run(mode="now", client_factory=lambda inc: SimulatedActionClient(inc, sc),
                        validate_kw={"settle_s": 1, "polls": 2, "poll_s": 1}, on_executed=heal)
     print("\nOUTCOME:", rep["outcome"])

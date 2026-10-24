@@ -22,15 +22,44 @@ ALLOWLIST = {
     "scale_service": {"params": ["service", "replicas"], "desc": "Scale a service (Kubernetes only)"},
 }
 
-# category -> (action, how to pick params). Generic: keyed on category + diagnosed component, never on incident names.
+HUMAN_PICKS = "<named by the human at approval>"   # the agent never reads flags, so it cannot choose one
+CACHE_WORDS = ("valkey", "redis", "cache", "memcached")
+
+
+def _evidence_container(diag, words):
+    """A container from the cited evidence whose name matches `words` (e.g. the cache that is down)."""
+    for e in diag.get("evidence", []):
+        ref = str(e.get("ref") or "")
+        if ref.startswith("container:") and any(w in ref.lower() for w in words):
+            return ref.split(":", 1)[1]
+    return None
+
+
+def _restart_blamed(rc, diag):
+    return {"service": rc["service"]}
+
+
+def _restart_cache(rc, diag):
+    svc = rc.get("service") or ""
+    target = svc if any(w in svc.lower() for w in CACHE_WORDS) else _evidence_container(diag, CACHE_WORDS)
+    return {"service": target} if target else None
+
+
+def _disable_feature(rc, diag):
+    # An application-level fault in a healthy container: restarting will not change the failing code path.
+    # The usual safe mitigation is turning off the recently enabled feature behind it; a human names the flag.
+    return {"flag": HUMAN_PICKS, "state": "off", "service": rc["service"]}
+
+
+# category -> (action, params builder). Generic: keyed on category + diagnosed component, never on incident names.
 RUNBOOK = {
-    "container_down": ("restart_service", lambda rc: {"service": rc["service"]}),
-    "resource_exhaustion": ("restart_service", lambda rc: {"service": rc["service"]}),
-    "cache_unavailable": ("restart_service", lambda rc: {"service": rc["service"]}),
-    "dependency_failure": ("restart_service", lambda rc: {"service": rc["service"]}),
-    "service_error": ("restart_service", lambda rc: {"service": rc["service"]}),
-    "traffic_spike": ("throttle_load_generator", lambda rc: {"users": 5}),
-    "database_unavailable": ("restart_service", lambda rc: {"service": rc["service"]}),
+    "container_down": ("restart_service", _restart_blamed),
+    "database_unavailable": ("restart_service", _restart_blamed),
+    "dependency_failure": ("restart_service", _restart_blamed),
+    "resource_exhaustion": ("restart_service", _restart_blamed),     # frees leaked memory / stuck threads (mitigation)
+    "cache_unavailable": ("restart_service", _restart_cache),
+    "service_error": ("toggle_feature_flag", _disable_feature),
+    "traffic_spike": ("throttle_load_generator", lambda rc, diag: {"users": 5}),
     # database_slow / latency_or_network / unknown: no safe allowlisted fix -> escalate with findings
 }
 NOT_RESTARTABLE = {"load-generator", "otel-collector", "prometheus", "jaeger", "opensearch", "grafana", "flagd", "flagd-ui"}
@@ -49,13 +78,14 @@ def plan(diag: dict) -> dict | None:
     if not entry:
         return None
     action, params_fn = entry
-    params = params_fn(rc)
-    if params.get("service") in NOT_RESTARTABLE or not params.get("service", "x"):
+    params = params_fn(rc, diag)
+    if not params or (action == "restart_service" and (not params.get("service") or params["service"] in NOT_RESTARTABLE)):
         return None
     return {"action": action, "params": params,
             "reason": f"{rc.get('category')} in {rc.get('service')}: {rc.get('description', '')}"[:300],
             "expected_effect": "alerting signals return to baseline within ~2 minutes",
-            "rollback": "none needed for a restart/throttle; if not recovered, escalate to a human"}
+            "rollback": ("turn the flag back on" if action == "toggle_feature_flag"
+                         else "none needed for a restart/throttle") + "; if not recovered, escalate to a human"}
 
 
 class ActionClient:
@@ -80,6 +110,8 @@ class ActionClient:
             r = {"status": "refused", "why": "kill switch is on"}
         elif not approved_by:
             r = {"status": "refused", "why": "no human approval"}
+        elif HUMAN_PICKS in p["params"].values():
+            r = {"status": "refused", "why": "a parameter still needs to be named by the human"}
         elif self.dry_run:
             r = {"status": "dry_run", "would_send": self.preview(p)}
         else:

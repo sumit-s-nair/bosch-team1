@@ -67,7 +67,7 @@ CHAINS = {  # request paths used to synthesise traces: (service, span name)
 def base():
     return {
         "name": "healthy", "description": "No fault: normal load.",
-        "expected": {"decision": ["no_incident", "escalate"], "services": [], "categories": ["unknown"]},
+        "expected": {"decision": ["no_incident", "escalate"], "services": [], "categories": ["unknown"], "fixes": []},
         "services": {s: {"rps": r, "err": 0.0, "p95": p, "base_rps": r, "base_err": 0.0, "base_p95": p}
                      for s, (r, p) in SERVICES.items()},
         "ops": {},          # (service, span_name) -> {"err": x, "p95": y, "rps_mult": z}
@@ -109,7 +109,7 @@ def scenario(name, description, expected):
 # ---- app faults ---------------------------------------------------------------------------------------
 def payment_failure():
     sc = scenario("payment_failure", "Payment service fails 50% of charges (app fault).",
-                  {"decision": ["propose_fix", "escalate"], "services": ["payment"], "categories": ["service_error"]})
+                  {"decision": ["propose_fix", "escalate"], "services": ["payment"], "categories": ["service_error"], "fixes": [("toggle_feature_flag", "payment")]})
     msg = "Payment request failed. Invalid token. demo.user_context.loyalty_level=gold"
     svc(sc, "payment", err=.5); svc(sc, "checkout", err=.5); svc(sc, "frontend", err=.004)
     op(sc, "payment", "oteldemo.PaymentService/Charge", err=.5); op(sc, "payment", "charge", err=.5)
@@ -123,7 +123,7 @@ def payment_failure():
 
 def cart_intermittent():
     sc = scenario("cart_intermittent", "Cart service fails EmptyCart intermittently (bad cart store connection).",
-                  {"decision": ["propose_fix", "escalate"], "services": ["cart"], "categories": ["service_error", "dependency_failure", "cache_unavailable"]})
+                  {"decision": ["propose_fix", "escalate"], "services": ["cart"], "categories": ["service_error", "dependency_failure", "cache_unavailable"], "fixes": [("toggle_feature_flag", "cart")]})
     msg = ("Can't access cart storage. StackExchange.Redis.RedisConnectionException: It was not possible to connect to "
            "the redis server(s). UnableToConnect on badhost:1234/Interactive")
     svc(sc, "cart", err=.03); svc(sc, "checkout", err=.5)
@@ -136,7 +136,7 @@ def cart_intermittent():
 
 def product_catalog_one_product():
     sc = scenario("product_catalog_one_product", "Product catalog fails GetProduct for one specific product id.",
-                  {"decision": ["propose_fix", "escalate"], "services": ["product-catalog"], "categories": ["service_error"]})
+                  {"decision": ["propose_fix", "escalate"], "services": ["product-catalog"], "categories": ["service_error"], "fixes": [("toggle_feature_flag", "product-catalog")]})
     msg = "Error: Product Catalog Fail Feature Flag Enabled"   # real message; flagguard must redact it
     svc(sc, "product-catalog", err=.1); svc(sc, "frontend", err=.03)
     op(sc, "product-catalog", "oteldemo.ProductCatalogService/GetProduct", err=.12)
@@ -149,7 +149,7 @@ def product_catalog_one_product():
 
 def recommendation_memory_leak():
     sc = scenario("recommendation_memory_leak", "Runaway cache in recommendation: memory grows until OOM, latency rises.",
-                  {"decision": ["propose_fix", "escalate"], "services": ["recommendation"], "categories": ["resource_exhaustion"]})
+                  {"decision": ["propose_fix", "escalate"], "services": ["recommendation"], "categories": ["resource_exhaustion"], "fixes": [("restart_service", "recommendation"), ("toggle_feature_flag", "recommendation")]})
     svc(sc, "recommendation", p95=420); svc(sc, "frontend", p95=95)
     op(sc, "recommendation", "oteldemo.RecommendationService/ListRecommendations", p95=420)
     op(sc, "recommendation", "get_product_list", p95=400)
@@ -161,7 +161,7 @@ def recommendation_memory_leak():
 
 def ad_high_cpu():
     sc = scenario("ad_high_cpu", "High CPU load in the ad service; GetAds latency rises.",
-                  {"decision": ["propose_fix", "escalate"], "services": ["ad"], "categories": ["resource_exhaustion"]})
+                  {"decision": ["propose_fix", "escalate"], "services": ["ad"], "categories": ["resource_exhaustion"], "fixes": [("toggle_feature_flag", "ad")]})
     svc(sc, "ad", p95=950)
     op(sc, "ad", "oteldemo.AdService/GetAds", p95=950); op(sc, "frontend", "oteldemo.AdService/GetAds", p95=980)
     sc["cpu"]["ad"] = 195
@@ -172,7 +172,7 @@ def ad_high_cpu():
 
 def ad_gc_pauses():
     sc = scenario("ad_gc_pauses", "Heavy garbage collection in the ad service causes latency spikes.",
-                  {"decision": ["propose_fix", "escalate"], "services": ["ad"], "categories": ["resource_exhaustion"]})
+                  {"decision": ["propose_fix", "escalate"], "services": ["ad"], "categories": ["resource_exhaustion"], "fixes": [("toggle_feature_flag", "ad")]})
     svc(sc, "ad", p95=3400)
     op(sc, "ad", "oteldemo.AdService/GetAds", p95=3400)
     sc["mem"]["ad"] = 93
@@ -185,7 +185,7 @@ def ad_gc_pauses():
 def homepage_flood():
     sc = scenario("homepage_flood", "Traffic flood on the homepage from the load generator.",
                   {"decision": ["propose_fix", "escalate"], "services": ["frontend", "frontend-proxy", "load-generator"],
-                   "categories": ["traffic_spike"]})
+                   "categories": ["traffic_spike"], "fixes": [("throttle_load_generator", "*"), ("toggle_feature_flag", "*")]})
     svc(sc, "frontend-proxy", rps=140, p95=620); svc(sc, "frontend", rps=130, p95=600)
     svc(sc, "product-catalog", rps=60, p95=180)
     op(sc, "frontend", "GET /", rps_mult=12, p95=600)
@@ -198,7 +198,7 @@ def homepage_flood():
 # ---- infrastructure faults ----------------------------------------------------------------------------
 def container_stopped():
     sc = scenario("container_stopped", "The payment container is stopped.",
-                  {"decision": ["propose_fix", "escalate"], "services": ["payment"], "categories": ["container_down"]})
+                  {"decision": ["propose_fix", "escalate"], "services": ["payment"], "categories": ["container_down"], "fixes": [("restart_service", "payment")]})
     msg = ('rpc error: code = Unavailable desc = connection error: desc = "transport: Error while dialing: '
            'dial tcp: lookup payment on 127.0.0.11:53: no such host"')
     cont(sc, "payment", state="exited", status="Exited (143) 3 minutes ago", exit_code=143)
@@ -211,7 +211,7 @@ def container_stopped():
 
 def crash_loop():
     sc = scenario("crash_loop", "The cart container keeps restarting.",
-                  {"decision": ["propose_fix", "escalate"], "services": ["cart"], "categories": ["container_down"]})
+                  {"decision": ["propose_fix", "escalate"], "services": ["cart"], "categories": ["container_down"], "fixes": [("restart_service", "cart")]})
     cont(sc, "cart", state="restarting", status="Restarting (139) 10 seconds ago", restart_count=7, exit_code=139,
          started_min_ago=0.2)
     svc(sc, "cart", rps=0.3, err=.4); svc(sc, "frontend", err=.08)
@@ -223,7 +223,7 @@ def crash_loop():
 
 def cache_unavailable():
     sc = scenario("cache_unavailable", "The Valkey cache used by cart is down.",
-                  {"decision": ["propose_fix", "escalate"], "services": ["valkey-cart"], "categories": ["cache_unavailable", "container_down", "dependency_failure"]})
+                  {"decision": ["propose_fix", "escalate"], "services": ["valkey-cart"], "categories": ["cache_unavailable", "container_down", "dependency_failure"], "fixes": [("restart_service", "valkey-cart")]})
     msg = ("Can't access cart storage. StackExchange.Redis.RedisConnectionException: No connection is active/available "
            "to service this operation: HGET 5f1b2c; UnableToConnect on valkey-cart:6379/Interactive")
     cont(sc, "valkey-cart", state="exited", status="Exited (0) 4 minutes ago")
@@ -241,7 +241,7 @@ def cache_unavailable():
 
 def db_unavailable():
     sc = scenario("db_unavailable", "The Postgres database (astronomy-db) behind product-catalog is down.",
-                  {"decision": ["propose_fix", "escalate"], "services": ["astronomy-db"], "categories": ["dependency_failure", "container_down", "database_unavailable"]})
+                  {"decision": ["propose_fix", "escalate"], "services": ["astronomy-db"], "categories": ["dependency_failure", "container_down", "database_unavailable"], "fixes": [("restart_service", "astronomy-db")]})
     msg = 'failed to query product: dial tcp 172.18.0.5:5432: connect: connection refused'
     cont(sc, "astronomy-db", state="exited", status="Exited (0) 2 minutes ago")
     svc(sc, "product-catalog", err=1.0); svc(sc, "frontend", err=.4); svc(sc, "recommendation", err=1.0)
@@ -254,7 +254,7 @@ def db_unavailable():
 
 def network_latency():
     sc = scenario("network_latency", "Network latency between checkout and payment (payment itself is fast).",
-                  {"decision": ["propose_fix", "escalate"], "services": ["payment", "checkout"], "categories": ["latency_or_network"]})
+                  {"decision": ["propose_fix", "escalate"], "services": ["payment", "checkout"], "categories": ["latency_or_network"], "fixes": []})
     svc(sc, "checkout", p95=2150)
     op(sc, "checkout", "oteldemo.PaymentService/Charge", p95=2050); op(sc, "checkout", "oteldemo.CheckoutService/PlaceOrder", p95=2150)
     op(sc, "frontend", "oteldemo.CheckoutService/PlaceOrder", p95=2200)
@@ -264,7 +264,7 @@ def network_latency():
 
 def cpu_starved():
     sc = scenario("cpu_starved", "The currency service is starved of CPU (at its limit); conversions slow down.",
-                  {"decision": ["propose_fix", "escalate"], "services": ["currency"], "categories": ["resource_exhaustion"]})
+                  {"decision": ["propose_fix", "escalate"], "services": ["currency"], "categories": ["resource_exhaustion"], "fixes": []})
     svc(sc, "currency", p95=480); svc(sc, "frontend", p95=160)
     op(sc, "currency", "Currency/Convert", p95=480)
     sc["cpu"]["currency"] = 99
@@ -282,7 +282,8 @@ def combined_payment_and_cache():
     sc["ops"].update(c["ops"]); sc["traces"] += c["traces"][-4:]; sc["logs"] += c["logs"]
     sc.update(name="combined_payment_and_cache", description="Two faults at once: payment failures and the cart cache down.",
               expected={"decision": ["propose_fix", "escalate"], "services": ["payment", "valkey-cart"],
-                        "categories": ["service_error", "cache_unavailable", "container_down", "dependency_failure"]})
+                        "categories": ["service_error", "cache_unavailable", "container_down", "dependency_failure"],
+                        "fixes": []})   # two faults: one action cannot resolve both -> must not verify as recovered
     return sc
 
 

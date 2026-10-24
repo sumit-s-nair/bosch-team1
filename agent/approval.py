@@ -29,5 +29,11 @@ def ask(diag, p, preview, ask_fn=input) -> dict:
     ans = ask_fn("Approve this action? type 'yes' to approve, anything else rejects: ").strip().lower()
     if ans != "yes":
         return {"approved": False, "by": None, "reason": f"rejected by human ({ans or 'empty'})"}
+    for k, v in p["params"].items():
+        if v == actions.HUMAN_PICKS:   # e.g. which feature flag: the agent is not allowed to read flags
+            val = ask_fn(f"The agent cannot choose '{k}' (it never reads feature flags). Enter {k} (empty = reject): ").strip()
+            if not val:
+                return {"approved": False, "by": None, "reason": f"rejected: no {k} given"}
+            p["params"][k] = val
     who = ask_fn("Your name (recorded in the audit log): ").strip() or "on-call"
-    return {"approved": True, "by": who, "reason": "approved"}
+    return {"approved": True, "by": who, "reason": "approved", "params_from_human": p["params"]}

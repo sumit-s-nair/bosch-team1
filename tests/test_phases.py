@@ -64,7 +64,7 @@ def test_rejected_means_nothing_executes(monkeypatch):
 
 
 def test_wrong_target_not_recovered_escalates(monkeypatch):
-    model_says(monkeypatch, "checkout", "service_error")
+    model_says(monkeypatch, "checkout", "container_down")       # restarts checkout, but payment is the one down
     rep, _ = run(monkeypatch, "container_stopped", ["yes", "sumit"])
     assert rep["outcome"] == "fix applied but not recovered: escalated"
 
@@ -87,3 +87,33 @@ def test_action_outside_allowlist_refused(tmp_path):
     c = actions.ActionClient(Incident(str(tmp_path)), dry_run=True)
     r = c.execute({"action": "docker_rm", "params": {}, "reason": "x"}, approved_by="sumit")
     assert r["status"] == "refused"
+
+
+def test_app_fault_proposes_flag_off_and_human_names_flag(monkeypatch):
+    model_says(monkeypatch, "product-catalog", "service_error")
+    rep, d = run(monkeypatch, "product_catalog_one_product", ["yes", "someFlag", "sumit"])
+    assert rep["action"]["action"] == "toggle_feature_flag"
+    assert rep["approval"]["params_from_human"]["flag"] == "someFlag"     # came from the human, not the agent
+    assert rep["outcome"] == "fixed and verified"
+
+
+def test_no_flag_named_means_rejected(monkeypatch):
+    model_says(monkeypatch, "payment", "service_error")
+    rep, _ = run(monkeypatch, "payment_failure", ["yes", ""])
+    assert rep["action_result"] is None and "no flag" in rep["approval"]["reason"]
+
+
+def test_restart_does_not_fix_an_app_fault(monkeypatch):
+    model_says(monkeypatch, "product-catalog", "container_down")       # wrong category -> restart
+    rep, _ = run(monkeypatch, "product_catalog_one_product", ["yes", "sumit"])
+    assert rep["action"]["action"] == "restart_service"
+    assert rep["outcome"] == "fix applied but not recovered: escalated"
+
+
+def test_cache_fault_targets_the_cache_not_its_caller():
+    diag = {"decision": "propose_fix",
+            "root_cause": {"service": "cart", "category": "cache_unavailable", "description": "cache down"},
+            "evidence": [{"id": "E3", "ref": "container:valkey-cart", "observed": "valkey-cart NOT RUNNING"}]}
+    assert actions.plan(diag)["params"] == {"service": "valkey-cart"}
+    diag["evidence"] = []
+    assert actions.plan(diag) is None      # cannot tell which cache -> escalate
