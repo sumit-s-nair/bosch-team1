@@ -10,6 +10,9 @@ LAT_ABS_MS = 1500           # fallback when no baseline exists yet
 MIN_RPS = 0.005             # quiet services (checkout, payment: ~2 calls/min) must still be able to alert ...
 MIN_ERRORS = 2              # ... so instead require at least this many actual errors in the 2-minute window
 WINDOW_S = 120
+OP_WINDOW = "5m"            # per-operation errors: longer window so rare calls (EmptyCart at checkout) are counted
+OP_ERR_THRESHOLD = 0.10
+OP_MIN_ERRORS = 2
 
 
 def check() -> list[dict]:
@@ -30,13 +33,108 @@ def check() -> list[dict]:
         if v["base_rps"] and v["base_rps"] > 0.2 and v["rps"] < 0.2 * v["base_rps"]:
             alerts.append({"type": "traffic_drop", "service": s, "value": round(v["rps"], 2),
                            "baseline": round(v["base_rps"], 2)})
+    alerted = {a["service"] for a in alerts if a["type"] == "error_rate"}
+    alerts += [a for a in operation_errors() if a["service"] not in alerted]
     for c in containers.list_containers():
         if c["state"] != "running" or "unhealthy" in c["status"] or "Restarting" in c["status"]:
             alerts.append({"type": "container", "service": c["name"], "value": c["status"]})
+    alerts += resource_alerts()
+    alerts += restart_alerts()
     return alerts
 
 
-def wait_for_alert(poll_s: int = 15, confirm: int = 2) -> list[dict]:
+_UNIT_S = {"second": 1, "minute": 60, "hour": 3600, "day": 86400, "week": 604800}
+
+
+def _uptime_s(status: str):
+    """'Up 8 seconds (health: starting)' -> 8; 'Up About a minute' -> 60; not up -> None."""
+    import re
+    m = re.match(r"Up (Less than a second|About an? (\w+)|(\d+) (\w+?)s?\b)", status or "")
+    if not m:
+        return None
+    if m.group(1).startswith("Less"):
+        return 0
+    if m.group(2):
+        return _UNIT_S.get(m.group(2), 3600)
+    return int(m.group(3)) * _UNIT_S.get(m.group(4), 1)
+
+
+def restart_alerts() -> list[dict]:
+    """A container that just (re)started on its own while the rest of the demo has been up for a while: a crash
+    or crash loop. Cheap (docker ps only); restarts done by our own Action API are not alerts."""
+    rows = [(c["name"], _uptime_s(c["status"])) for c in containers.list_containers()]
+    ups = sorted(u for _, u in rows if u is not None)
+    if len(ups) < 5 or ups[len(ups) // 2] < 15 * 60:        # the demo itself just started: nothing to compare with
+        return []
+    api = observe._api_restarts()
+    out = []
+    for name, up in rows:
+        if up is not None and up < 300 and not observe._restarted_by_us(name, time.time() - up, api):
+            out.append({"type": "container_restarted", "service": name, "value": f"up {up}s while the demo has been up longer"})
+    return out
+
+
+def operation_errors() -> list[dict]:
+    """One operation failing while the service as a whole looks fine (e.g. only EmptyCart fails)."""
+    q = lambda extra, w: (f'sum by (service_name, span_name)(increase(traces_span_metrics_calls_total'
+                          f'{{{observe.SERVER}{extra}}}{observe.metrics.rng(w)}))')
+    key = lambda r: (r["metric"].get("service_name"), r["metric"].get("span_name"))
+    try:
+        tot = {key(r): r["value"] for r in observe.metrics.promql(q("", OP_WINDOW)) if r["value"]}
+        err = {key(r): r["value"] for r in observe.metrics.promql(q("," + observe.ERR, OP_WINDOW)) if r["value"]}
+        btot = {key(r): r["value"] for r in observe.metrics.promql(q("", observe.BASE)) if r["value"]}
+        berr = {key(r): r["value"] for r in observe.metrics.promql(q("," + observe.ERR, observe.BASE)) if r["value"]}
+    except Exception:
+        return []
+    out = []
+    for (svc, op), e in err.items():
+        if svc in observe.DEMO_SERVICES_SKIP or observe.flagguard.is_flag_text(op) or not tot.get((svc, op)):
+            continue
+        rate = e / tot[(svc, op)]
+        base = berr.get((svc, op), 0) / btot[(svc, op)] if btot.get((svc, op)) else 0.0
+        if e >= OP_MIN_ERRORS and rate >= OP_ERR_THRESHOLD and rate > 2 * base:
+            out.append({"type": "operation_errors", "service": svc, "operation": op, "value": round(rate, 3),
+                        "baseline": round(base, 3)})
+    return out
+
+
+def resource_alerts() -> list[dict]:
+    """Memory about to run out (sustained growth near the limit) or CPU starved / throttled. Same rules as the tools."""
+    memp = observe._byservice("container_memory_percent_ratio", "container_name")
+    ttl = observe._byservice(observe.MEM_TTL_Q, "container_name")
+    throttled = observe._byservice(observe.THROTTLE_Q, "container_name")
+    cpu = observe._byservice("container_cpu_utilization_ratio", "container_name")
+    skip = observe.NOT_A_CULPRIT_FOR_RESOURCES
+    leak_cand = [n for n, t in ttl.items() if t < observe.LEAK_TTL_MIN and memp.get(n, 0) >= observe.LEAK_MIN_MEM_PCT and n not in skip]
+    cpu_cand = [n for n in set(throttled) | set(cpu) if n not in skip
+                and (throttled.get(n, 0) > observe.THROTTLE_HOT or cpu.get(n, 0) > 50)]
+    if not leak_cand and not cpu_cand:
+        return []
+    out, now = [], time.time()
+    for n in sorted(set(leak_cand) | set(cpu_cand)):
+        try:
+            info = containers.inspect(n)
+        except Exception:
+            continue
+        if not info.get("running"):
+            continue
+        if n in leak_cand:
+            try:
+                started = observe.datetime.fromisoformat(info["started_at"][:26].rstrip("Z") + "+00:00").timestamp()
+            except Exception:
+                started = None
+            if started is None or now - started >= observe.WARMUP_MIN * 60:
+                out.append({"type": "memory_leak", "service": n, "value": f"{memp[n]:.0f}% of limit, full in ~{ttl[n]:.0f} min"})
+        if n in cpu_cand:
+            limit = info.get("cpu_limit_cores")
+            of_limit = cpu.get(n, 0) / (limit * 100) * 100 if limit else None
+            if throttled.get(n, 0) > observe.THROTTLE_HOT or (of_limit is not None and of_limit > observe.CPU_LIMIT_HOT_PCT):
+                out.append({"type": "cpu_starved", "service": n,
+                            "value": f"throttled {throttled.get(n, 0) * 100:.0f}%" + (f", {of_limit:.0f}% of its CPU limit" if of_limit else "")})
+    return out
+
+
+def wait_for_alert(poll_s: int = 10, confirm: int = 2) -> list[dict]:
     """Block until the same alert key fires on `confirm` consecutive polls."""
     streak: dict = {}
     while True:

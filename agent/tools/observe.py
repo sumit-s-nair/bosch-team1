@@ -57,10 +57,34 @@ def _starts() -> tuple[dict, float | None, datetime]:
     return {"starts": starts, "info": info}, stack, now
 
 
-def _individual_restart(name, starts, stack) -> bool:
-    """Started on its own (not as part of the whole demo starting)."""
+def _api_restarts() -> dict:
+    """Restarts our own Action API performed (from its audit log), so the agent does not blame its own fixes."""
+    import os
+    from agent import config
+    path = config.setting("ACTION_API_AUDIT", "runs/action_api_audit.jsonl")
+    out = {}
+    if not os.path.exists(path):
+        return out
+    try:
+        for line in open(path, encoding="utf-8").read().splitlines()[-500:]:
+            r = json.loads(line)
+            if r.get("status") == "executed" and r.get("action") == "restart_service":
+                t = datetime.strptime(r["t"], "%Y-%m-%d %H:%M:%S").astimezone().timestamp()
+                out.setdefault((r.get("params") or {}).get("service"), []).append(t)
+    except Exception:
+        pass
+    return out
+
+
+def _restarted_by_us(name, t, api=None) -> bool:
+    return any(abs(t - x) <= 120 for x in (api if api is not None else _api_restarts()).get(name, []))
+
+
+def _individual_restart(name, starts, stack, api=None) -> bool:
+    """Started on its own: not as part of the whole demo starting, and not by an approved Action API restart."""
     t = starts.get(name)
-    return t is not None and (stack is None or t - stack > STACK_START_WINDOW_S)
+    return (t is not None and (stack is None or t - stack > STACK_START_WINDOW_S)
+            and not _restarted_by_us(name, t, api))
 # CPU starvation: usage as % of the container's OWN cpu limit (docker --cpus), and CFS throttling ratio
 CPU_LIMIT_HOT_PCT = 85
 THROTTLE_HOT = 0.20
@@ -91,9 +115,9 @@ def _fmt_ms(x):
 # ------------------------------------------------------------------ service health
 def service_health_raw(window=None, strict=False) -> dict:
     """Numbers per service. Used by both the detector and the LLM tool."""
-    rate = lambda w, extra="": f'sum by (service_name)(rate(traces_span_metrics_calls_total{{{SERVER}{extra}}}[{w}]))'
+    rate = lambda w, extra="": f'sum by (service_name)(rate(traces_span_metrics_calls_total{{{SERVER}{extra}}}{metrics.rng(w)}))'
     p95 = lambda w: (f'histogram_quantile(0.95, sum by (service_name, le)'
-                     f'(rate(traces_span_metrics_duration_milliseconds_bucket{{{SERVER}}}[{w}])))')
+                     f'(rate(traces_span_metrics_duration_milliseconds_bucket{{{SERVER}}}{metrics.rng(w)})))')
     current = window or NOW
     baseline = f"1h offset {window}" if window else BASE
     query = lambda q: _byservice(q, strict=strict)
@@ -429,9 +453,14 @@ def recent_changes(L: Ledger, minutes: int = 30) -> str:
         d = (f"the whole demo started together {(now.timestamp() - stack) / 60:.0f} min ago "
              f"({sum(abs(t - stack) <= STACK_START_WINDOW_S for t in st['starts'].values())} containers): normal startup, not a change")
         lines.append(f"- {d} [{L.add('change', d, ref='stack-start', anomalous=False)}]")
+    api = _api_restarts()
     for name, t in sorted(st["starts"].items()):
         age = (now.timestamp() - t) / 60
-        if age <= minutes and _individual_restart(name, st["starts"], stack):
+        if age <= minutes and _restarted_by_us(name, t, api):
+            d = f"{name} restarted {age:.1f} min ago by an approved Action API fix (not a fault)"
+            lines.append(f"- {d} [{L.add('change', d, ref=f'container:{name}', anomalous=False)}]")
+            continue
+        if age <= minutes and _individual_restart(name, st["starts"], stack, api):
             rc = st["info"][name].get("restart_count")
             eid = L.add("change", f"{name} restarted on its own {age:.1f} min ago, restarts={rc}",
                         ref=f"container:{name}", anomalous=True)
