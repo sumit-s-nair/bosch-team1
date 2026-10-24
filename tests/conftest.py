@@ -16,5 +16,6 @@ def block_network(monkeypatch):
             return real_connect(self, address, *args, **kwargs)
         raise AssertionError(f"Network access is forbidden in offline tests ({address})")
     monkeypatch.setattr(socket.socket, "connect", guarded)
+    monkeypatch.setenv("ACTION_API_URL", "")      # never the real Action API from .env; tests that need one set it
     yield
     ALLOWED_PORTS.clear()

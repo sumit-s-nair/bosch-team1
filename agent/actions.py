@@ -61,7 +61,7 @@ RUNBOOK = {
     "resource_exhaustion": ("restart_service", _restart_blamed),     # frees leaked memory / stuck threads (mitigation)
     "cache_unavailable": ("restart_service", _restart_cache),
     "service_error": ("toggle_feature_flag", _disable_feature),
-    "traffic_spike": ("throttle_load_generator", lambda rc, diag: {"users": 5}),
+    "traffic_spike": ("throttle_load_generator", lambda rc, diag: {"users": 1}),   # demo default is 5 users
     # database_slow / latency_or_network / unknown: no safe allowlisted fix -> escalate with findings
 }
 NOT_RESTARTABLE = {"load-generator", "otel-collector", "prometheus", "jaeger", "opensearch", "grafana", "flagd", "flagd-ui"}
