@@ -7,14 +7,17 @@ ERR_THRESHOLD = 0.05        # 5% server errors
 LAT_FACTOR = 3.0            # p95 > 3x baseline ...
 LAT_MIN_MS = 300            # ... and above 300ms
 LAT_ABS_MS = 1500           # fallback when no baseline exists yet
-MIN_RPS = 0.05
+MIN_RPS = 0.005             # quiet services (checkout, payment: ~2 calls/min) must still be able to alert ...
+MIN_ERRORS = 2              # ... so instead require at least this many actual errors in the 2-minute window
+WINDOW_S = 120
 
 
 def check() -> list[dict]:
     alerts = []
     for s, v in observe.service_health_raw().items():
+        errors_in_window = (v["err_rate"] or 0) * v["rps"] * WINDOW_S
         if v["rps"] >= MIN_RPS and v["err_rate"] is not None and v["err_rate"] >= ERR_THRESHOLD \
-                and v["err_rate"] > 2 * (v["base_err_rate"] or 0):
+                and errors_in_window >= MIN_ERRORS and v["err_rate"] > 2 * (v["base_err_rate"] or 0):
             alerts.append({"type": "error_rate", "service": s, "value": round(v["err_rate"], 3),
                            "baseline": v["base_err_rate"]})
         b = v["base_p95_ms"]

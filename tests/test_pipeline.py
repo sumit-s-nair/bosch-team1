@@ -408,3 +408,17 @@ def test_db_no_data_is_unknown_not_healthy(monkeypatch):
     out = observe_db.db_health(L)
     items = db_check(L, out)
     assert "VERDICT: database status unknown" in out and not any(items.values())
+
+
+def test_quiet_service_with_real_errors_alerts_but_one_blip_does_not(monkeypatch):
+    """checkout gets ~2 calls/min: 100% errors there must alert; a single failure must not."""
+    from agent import detector
+    from agent.tools import containers as c
+    monkeypatch.setattr(c, "list_containers", lambda: [])
+    def health(err_rate, rps):
+        return {"checkout": {"rps": rps, "err_rate": err_rate, "p95_ms": 190, "base_rps": 0.05,
+                             "base_err_rate": 0.0, "base_p95_ms": 1000}}
+    monkeypatch.setattr(detector.observe, "service_health_raw", lambda: health(1.0, 0.03))      # ~3.6 errors / 2 min
+    assert [a["type"] for a in detector.check()] == ["error_rate"]
+    monkeypatch.setattr(detector.observe, "service_health_raw", lambda: health(1.0, 0.008))     # ~1 error / 2 min
+    assert detector.check() == []
