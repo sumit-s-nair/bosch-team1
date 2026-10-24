@@ -58,8 +58,10 @@ def _disable_feature(rc, diag):
 RUNBOOK = {
     "container_down": ("restart_service", _restart_blamed),
     "database_unavailable": ("restart_service", _restart_blamed),
-    "dependency_failure": ("restart_service", _restart_blamed),
-    "resource_exhaustion": ("restart_service", _restart_blamed),     # frees leaked memory / stuck threads (mitigation)
+    # application-level faults: first ask the Action API (dry run) whether this service has an enabled feature to turn
+    # off; if it has none, the pipeline falls back to a restart. So a mislabelled category cannot pick a useless fix.
+    "dependency_failure": ("toggle_feature_flag", _disable_feature),
+    "resource_exhaustion": ("toggle_feature_flag", _disable_feature),
     "cache_unavailable": ("restart_service", _restart_cache),
     "service_error": ("toggle_feature_flag", _disable_feature),
     "traffic_spike": ("throttle_load_generator", lambda rc, diag: {"users": 1}),   # demo default is 5 users

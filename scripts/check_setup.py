@@ -37,19 +37,11 @@ def c_logs():
 def c_llm():
     tool = {"type": "function", "function": {"name": "container_health", "description": "Container states",
                                              "parameters": {"type": "object", "properties": {}, "required": []}}}
-    msgs = [{"role": "user", "content": "Connection test: call container_health with no arguments."}]
-    report, ok_any = {}, False
-    for pr in config.llm_chain():          # test each provider on its own, so a bad key or busy model shows up
-        try:
-            m = llm._ollama(msgs, [tool], False, False, 120) if pr["name"] == "local" else llm._hosted(msgs, [tool], False, 60, pr)
-            good = "container_health" in [c["function"]["name"] for c in m.get("tool_calls") or []]
-            report[f"{pr['name']}:{pr['model']}"] = "OK" if good else "answered without the tool call"
-            ok_any |= good
-        except Exception as e:
-            report[f"{pr['name']}:{pr['model']}"] = f"FAILED {str(e)[:120]}"
-    if not ok_any:
-        raise RuntimeError(json.dumps(report))
-    return report
+    m = llm.chat([{"role": "user", "content": "Connection test: call container_health with no arguments."}],
+                 tools=[tool], think=False)
+    if "container_health" not in [c["function"]["name"] for c in m.get("tool_calls") or []]:
+        raise RuntimeError(f"model answered without the tool call (content={m.get('content', '')[:80]!r})")
+    return {"model": config.LLM_MODEL, "tool_calling": True}
 
 
 def main():

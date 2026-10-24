@@ -3,12 +3,14 @@ import json
 import re
 import time
 
-from agent import llm
+from agent import config, llm
 from agent.tools import observe
 from agent.evidence import Ledger
 from agent.schema import validate_output
 
 MAX_TOOL_STEPS = 6
+MAX_CALLS_PER_STEP = 2     # an 8B model may ask for one tool per alerting service at once; that bloats the context
+MAX_TOOL_CALLS = 8         # total follow-up tool calls per investigation
 ACT_CONFIDENCE = 0.7
 CATEGORIES = ["service_error", "dependency_failure", "container_down", "resource_exhaustion",
               "latency_or_network", "traffic_spike", "cache_unavailable", "database_unavailable",
@@ -25,7 +27,8 @@ Rules:
 - Check container health for stopped/restarting/OOM containers and resource pressure.
 - product-catalog depends on the Postgres database astronomy-db; if product-catalog errors or is slow, call db_health before blaming product-catalog.
 - If CPU, memory or latency looks wrong, check runtime metrics via resource_usage; if request volume changed, use service_overview with group_by.
-- Be efficient: call only the tools you need (max {MAX_TOOL_STEPS}). When you have enough, stop calling tools.
+- Be efficient: at most {MAX_CALLS_PER_STEP} tool calls per step and {MAX_TOOL_CALLS} in total. Start with the service
+  whose OWN server operations fail; do not query every alerting service. When you have enough, stop calling tools.
 - If evidence is weak or contradictory, say so: low confidence and escalate is a GOOD outcome.
 - An incident needs USER-FACING impact (errors, latency, traffic loss) or a broken container. If every service
   looks healthy, say there is no incident (category "unknown", low confidence). Do not invent one.
@@ -152,8 +155,11 @@ def investigate(alerts: list[dict], log=print, context: str = "") -> dict:
     L = Ledger()
     t0 = time.time()
     trail = []
-    services = sorted(set(observe.service_health_raw()) |
-                      {c["name"] for c in observe.containers.list_containers()})
+    try:
+        names = {c["name"] for c in observe.containers.list_containers()}
+    except Exception:
+        names = set()          # docker briefly unavailable: fall back to the services Prometheus knows
+    services = sorted(set(observe.service_health_raw()) | names)
 
     # 1) fixed first sweep (cheap, always useful)
     sweep = []
@@ -182,7 +188,9 @@ def investigate(alerts: list[dict], log=print, context: str = "") -> dict:
     # 2) model-driven follow-ups
     for step in range(MAX_TOOL_STEPS):
         msg = _llm(messages, tools)
-        calls = msg.get("tool_calls") or []
+        calls = (msg.get("tool_calls") or [])[:MAX_CALLS_PER_STEP]
+        used = sum(1 for t in trail if t["by"] == "llm")
+        calls = calls[:max(0, MAX_TOOL_CALLS - used)]
         if msg.get("thinking"):
             log(f"[llm thinking] {msg['thinking'][:600]}\n")
         if not calls:
@@ -231,7 +239,7 @@ def investigate(alerts: list[dict], log=print, context: str = "") -> dict:
         diag["decision"] = "no_incident"
         diag["validation_notes"].append("no alert fired and no tool found anything abnormal")
     diag["other_problems"] = other_problems(diag, L)
-    diag["model"] = llm.last_provider
+    diag["model"] = config.LLM_MODEL
     diag["alerts"] = alerts
     diag["tool_trail"] = trail
     diag["investigation_seconds"] = round(time.time() - t0, 1)
