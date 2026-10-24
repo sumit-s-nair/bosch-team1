@@ -22,6 +22,12 @@ class Incident:
         print(f"[{row['t']}] {phase.upper():12} {msg}")
         return row
 
+    def say(self, kind, **data):
+        """One entry of the run's conversation (sweep, model tool calls, thinking, human questions and answers)."""
+        row = {"t": time.strftime("%H:%M:%S"), "kind": kind, **data}
+        with open(os.path.join(self.dir, "conversation.jsonl"), "a", encoding="utf-8") as f:
+            f.write(json.dumps(row, default=str) + "\n")
+
     def timeline(self):
         path = os.path.join(self.dir, "timeline.jsonl")
         return [json.loads(l) for l in open(path, encoding="utf-8")] if os.path.exists(path) else []

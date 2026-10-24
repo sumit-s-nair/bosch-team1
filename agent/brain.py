@@ -152,7 +152,9 @@ def validate(diag: dict, L: Ledger) -> dict:
     return diag
 
 
-def investigate(alerts: list[dict], log=print, context: str = "") -> dict:
+def investigate(alerts: list[dict], log=print, context: str = "", feed=None) -> dict:
+    """feed(kind, **data), if given, receives the whole conversation as it happens (the dashboard shows it live)."""
+    feed = feed or (lambda kind, **d: None)
     L = Ledger()
     t0 = time.time()
     trail = []
@@ -169,6 +171,7 @@ def investigate(alerts: list[dict], log=print, context: str = "") -> dict:
         trail.append({"tool": name, "args": {}, "by": "sweep"})
         sweep.append(f"### {name}\n{out}")
         log(f"[sweep] {name}\n{out}\n")
+        feed("sweep", tool=name, args={}, output=out)
     real_alerts = [a for a in alerts if a.get("type") != "manual"]
     if not real_alerts and not any(i["anomalous"] for i in L.items.values()):
         # manual page, and the fixed sweep found nothing abnormal: no need to spend model time
@@ -185,6 +188,7 @@ def investigate(alerts: list[dict], log=print, context: str = "") -> dict:
          "\n\nInvestigate further with tools to find the root cause."},
     ]
     tools = _tool_specs(services)
+    feed("prompt", text=messages[1]["content"])
 
     # 2) model-driven follow-ups, capped by steps and by wall-clock time (checked before each LLM turn)
     limit_note = None
@@ -192,6 +196,7 @@ def investigate(alerts: list[dict], log=print, context: str = "") -> dict:
         if time.time() - t0 > TOOL_TIME_BUDGET_S:
             limit_note = f"stopped calling tools after {time.time() - t0:.0f}s (time budget {TOOL_TIME_BUDGET_S:.0f}s)"
             log(f"[limit] {limit_note}\n")
+            feed("limit", text=limit_note)
             break
         msg = _llm(messages, tools)
         calls = (msg.get("tool_calls") or [])[:MAX_CALLS_PER_STEP]
@@ -199,6 +204,10 @@ def investigate(alerts: list[dict], log=print, context: str = "") -> dict:
         calls = calls[:max(0, MAX_TOOL_CALLS - used)]
         if msg.get("thinking"):
             log(f"[llm thinking] {msg['thinking'][:600]}\n")
+            feed("thinking", text=msg["thinking"][:2000])
+        said = _strip_think(msg.get("content", "")).strip()
+        if said:
+            feed("model", text=said[:2000])
         if not calls:
             break
         messages.append({"role": "assistant", "content": _strip_think(msg.get("content", "")),
@@ -218,13 +227,18 @@ def investigate(alerts: list[dict], log=print, context: str = "") -> dict:
                 out = _run_tool(L, name, args)
             trail.append({"tool": name, "args": args, "by": "llm"})
             log(f"[llm step {step+1}] {name}({args})\n{out}\n")
+            feed("tool", tool=name, args=args, output=out, step=step + 1)
             messages.append({"role": "tool", "tool_name": name, "content": out})
 
     # 3) diagnosis
     messages.append({"role": "user", "content": FINAL_PROMPT})
     diag = None
     for attempt in range(2):
-        raw = _llm(messages, json_mode=True, think=True).get("content", "")
+        final_msg = _llm(messages, json_mode=True, think=True)
+        raw = final_msg.get("content", "")
+        if final_msg.get("thinking"):
+            feed("thinking", text=final_msg["thinking"][:3000])
+        feed("diagnosis", text=_strip_think(raw)[:4000])
         try:
             diag = _parse_json(raw)
             ok, errors = validate_output(diag)
@@ -235,11 +249,14 @@ def investigate(alerts: list[dict], log=print, context: str = "") -> dict:
             diag = None
             messages.append({"role": "assistant", "content": _strip_think(raw)[:500]})
             messages.append({"role": "user", "content": f"Invalid diagnosis ({e}). Reply with only the corrected JSON object."})
+            feed("retry", text=f"invalid diagnosis ({e}); asked the model to correct it")
     if diag is None:
         diag = {"summary": "Model failed to produce a valid diagnosis twice; escalating",
                 "root_cause": {"service": "unknown", "category": "unknown", "description": "no valid diagnosis"},
                 "confidence": 0, "evidence": []}
     diag = validate(diag, L)
+    feed("validation", text="; ".join(diag["validation_notes"]) or "evidence ids and confidence checked: ok",
+         decision=diag["decision"], confidence=diag["confidence"])
     if limit_note:
         diag["validation_notes"].append(limit_note)
     real_alerts = [a for a in alerts if a.get("type") != "manual"]

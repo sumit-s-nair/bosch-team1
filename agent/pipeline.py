@@ -19,8 +19,14 @@ MAX_ROUNDS = 3      # re-investigate after a fix that ran but did not recover (e
 def run(mode="now", ask_fn=None, client_factory=None, validate_kw=None, on_executed=None, incident=None):
     """ask_fn answers every human question (terminal input by default; the agent server passes the browser's).
     incident: an already-created Incident, so a caller (agent/server.py) knows the run id before the run starts."""
-    ask_fn = ask_fn or (lambda prompt="": input(prompt))
+    raw_ask = ask_fn or (lambda prompt="": input(prompt))
     inc = incident or Incident()
+
+    def ask_fn(prompt=""):          # every question to the human and its answer go into the conversation
+        inc.say("question", text=prompt.strip())
+        ans = raw_ask(prompt)
+        inc.say("answer", text=ans)
+        return ans
 
     # DETECT
     if mode == "watch":
@@ -40,7 +46,8 @@ def run(mode="now", ask_fn=None, client_factory=None, validate_kw=None, on_execu
         # INVESTIGATE
         inc.event("investigate", "sweep + LLM tool loop started" + (f" (round {rnd}, after a fix that did not recover)" if rnd > 1 else ""))
         try:
-            diag = brain.investigate(alerts, log=lambda *a: None, context=context)
+            diag = brain.investigate(alerts, log=lambda *a: None, context=context,
+                                     feed=lambda kind, **d: inc.say(kind, round=rnd, **d))
         except Exception as e:      # never crash mid-incident: escalate with what went wrong
             inc.event("investigate", f"investigation failed: {type(e).__name__}: {str(e)[:200]}")
             diag = {"summary": f"Investigation failed ({type(e).__name__}); escalating to a human.",
