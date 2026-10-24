@@ -1,0 +1,68 @@
+{
+  "recovered": true,
+  "target_recovered": true,
+  "other_alerts": [],
+  "required_clean_polls": 3,
+  "consecutive_clean_polls": 0,
+  "polls": [
+    {
+      "poll": 1,
+      "still_firing": [],
+      "new_alerts": [
+        {
+          "type": "operation_errors",
+          "service": "frontend",
+          "operation": "GET /api/recommendations",
+          "value": 0.309,
+          "baseline": 0.0
+        }
+      ],
+      "expected_from_fix": [],
+      "telemetry_valid": true,
+      "target": "product-catalog",
+      "target_healthy": true,
+      "target_detail": "no errors in the last minute, container running"
+    },
+    {
+      "poll": 2,
+      "still_firing": [],
+      "new_alerts": [
+        {
+          "type": "operation_errors",
+          "service": "frontend",
+          "operation": "GET /api/recommendations",
+          "value": 0.309,
+          "baseline": 0.0
+        },
+        {
+          "type": "memory_leak",
+          "service": "payment",
+          "value": "84% of limit, full in ~15 min"
+        }
+      ],
+      "expected_from_fix": [],
+      "telemetry_valid": true,
+      "target": "product-catalog",
+      "target_healthy": true,
+      "target_detail": "no errors in the last minute, container running"
+    },
+    {
+      "poll": 3,
+      "still_firing": [],
+      "new_alerts": [
+        {
+          "type": "operation_errors",
+          "service": "frontend",
+          "operation": "GET /api/recommendations",
+          "value": 0.309,
+          "baseline": 0.0
+        }
+      ],
+      "expected_from_fix": [],
+      "telemetry_valid": true,
+      "target": "product-catalog",
+      "target_healthy": true,
+      "target_detail": "no errors in the last minute, container running"
+    }
+  ]
+}

@@ -1,0 +1,14 @@
+[
+  {
+    "type": "error_rate",
+    "service": "checkout",
+    "value": 1.0,
+    "baseline": 0.0
+  },
+  {
+    "type": "error_rate",
+    "service": "product-catalog",
+    "value": 0.052,
+    "baseline": 0.0
+  }
+]

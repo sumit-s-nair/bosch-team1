@@ -1,0 +1,11 @@
+{
+  "action": "toggle_feature_flag",
+  "params": {
+    "service": "product-catalog",
+    "state": "off"
+  },
+  "reason": "dependency_failure in product-catalog: product-catalog is unresponsive to checkout's GetProduct calls, causing 100% errors in checkout despite its own 5.2% error rate",
+  "expected_effect": "alerting signals return to baseline within ~2 minutes",
+  "rollback": "turn the flag(s) back on (undo); if not recovered, escalate to a human",
+  "dry_run_preview": "toggle_feature_flag(service=product-catalog, state=off) -> turn off 1 enabled feature flag(s) related to product-catalog: productCatalogFailure"
+}
