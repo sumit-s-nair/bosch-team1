@@ -1,0 +1,14 @@
+[
+  {
+    "type": "latency",
+    "service": "shipping",
+    "value": 540,
+    "baseline": 8
+  },
+  {
+    "type": "latency",
+    "service": "quote",
+    "value": 580,
+    "baseline": 3
+  }
+]

@@ -1,0 +1,78 @@
+{
+  "recovered": true,
+  "target_recovered": true,
+  "other_alerts": [],
+  "required_clean_polls": 3,
+  "consecutive_clean_polls": 0,
+  "polls": [
+    {
+      "poll": 1,
+      "still_firing": [],
+      "new_alerts": [
+        {
+          "type": "error_rate",
+          "service": "checkout",
+          "value": 1.0,
+          "baseline": 0.0
+        },
+        {
+          "type": "error_rate",
+          "service": "payment",
+          "value": 1.0,
+          "baseline": 0.0
+        }
+      ],
+      "expected_from_fix": [],
+      "telemetry_valid": true,
+      "target": "quote",
+      "target_healthy": true,
+      "target_detail": "no errors in the last minute, container running"
+    },
+    {
+      "poll": 2,
+      "still_firing": [],
+      "new_alerts": [
+        {
+          "type": "error_rate",
+          "service": "checkout",
+          "value": 1.0,
+          "baseline": 0.0
+        },
+        {
+          "type": "error_rate",
+          "service": "payment",
+          "value": 1.0,
+          "baseline": 0.0
+        }
+      ],
+      "expected_from_fix": [],
+      "telemetry_valid": true,
+      "target": "quote",
+      "target_healthy": true,
+      "target_detail": "no errors in the last minute, container running"
+    },
+    {
+      "poll": 3,
+      "still_firing": [],
+      "new_alerts": [
+        {
+          "type": "error_rate",
+          "service": "checkout",
+          "value": 1.0,
+          "baseline": 0.0
+        },
+        {
+          "type": "error_rate",
+          "service": "payment",
+          "value": 1.0,
+          "baseline": 0.0
+        }
+      ],
+      "expected_from_fix": [],
+      "telemetry_valid": true,
+      "target": "quote",
+      "target_healthy": true,
+      "target_detail": "no errors in the last minute, container running"
+    }
+  ]
+}

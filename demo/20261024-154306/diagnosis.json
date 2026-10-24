@@ -1,0 +1,350 @@
+{
+  "summary": "Shipping and quote services have high latency due to the quote service's internal processing delay, which is causing dependency issues for shipping.",
+  "symptoms": [
+    "shipping latency 540ms [E2]",
+    "quote latency 580ms [E1]",
+    "shipping CLIENT POST latency 580ms [E14]",
+    "quote SERVER POST latency 580ms [E16]"
+  ],
+  "root_cause": {
+    "service": "quote",
+    "category": "service_error",
+    "description": "Internal processing delay in quote service causing high latency, affecting dependent services like shipping"
+  },
+  "confidence": 0.8,
+  "evidence": [
+    {
+      "id": "E1",
+      "why": "Quote service's p95 latency matches shipping's latency anomaly",
+      "kind": "metric",
+      "ref": "span_metrics:quote",
+      "observed": "quote: rps=0.18 err=0.0% p95=580ms (baseline err=0.0%, p95=3ms)",
+      "anomalous": true
+    },
+    {
+      "id": "E2",
+      "why": "Shipping's latency is directly impacted by quote service's slow response",
+      "kind": "metric",
+      "ref": "span_metrics:shipping",
+      "observed": "shipping: rps=0.22 err=0.0% p95=540ms (baseline err=0.0%, p95=8ms)",
+      "anomalous": true
+    },
+    {
+      "id": "E14",
+      "why": "Shipping's CLIENT POST to quote service shows same latency as quote's SERVER POST",
+      "kind": "metric",
+      "ref": "span_metrics:shipping:POST",
+      "observed": "shipping CLIENT 'POST': err=0.0% p95=580ms rps=0.18",
+      "anomalous": false
+    },
+    {
+      "id": "E16",
+      "why": "Quote service's SERVER POST /getquote has p95 580ms matching the anomaly",
+      "kind": "metric",
+      "ref": "span_metrics:quote:POST /getquote",
+      "observed": "quote SERVER 'POST /getquote': err=0.0% p95=580ms rps=0.18",
+      "anomalous": false
+    }
+  ],
+  "ruled_out": [
+    "Database issues for quote (no db_health alerts)",
+    "Network latency (no inter-service network anomalies)"
+  ],
+  "open_questions": [
+    "Is there an unmonitored dependency causing quote service delay?"
+  ],
+  "decision": "propose_fix",
+  "validation_notes": [],
+  "other_problems": [
+    "email: rps=0.02 err=0.0% p95=48ms (baseline err=0.0%, p95=28ms) [E3]",
+    "checkout: rps=0.03 err=0.0% p95=1940ms (baseline err=0.0%, p95=1180ms) [E4]",
+    "ad: restarts=8 [E11]"
+  ],
+  "model": "qwen3:8b",
+  "alerts": [
+    {
+      "type": "latency",
+      "service": "shipping",
+      "value": 540,
+      "baseline": 8
+    },
+    {
+      "type": "latency",
+      "service": "quote",
+      "value": 580,
+      "baseline": 3
+    }
+  ],
+  "tool_trail": [
+    {
+      "tool": "service_overview",
+      "args": {},
+      "by": "sweep"
+    },
+    {
+      "tool": "container_health",
+      "args": {},
+      "by": "sweep"
+    },
+    {
+      "tool": "recent_changes",
+      "args": {},
+      "by": "sweep"
+    },
+    {
+      "tool": "service_operations",
+      "args": {
+        "service": "shipping"
+      },
+      "by": "llm"
+    },
+    {
+      "tool": "service_operations",
+      "args": {
+        "service": "quote"
+      },
+      "by": "llm"
+    }
+  ],
+  "investigation_seconds": 141.9,
+  "ledger": [
+    {
+      "id": "E1",
+      "kind": "metric",
+      "ref": "span_metrics:quote",
+      "value": {
+        "rps": 0.18334250045835626,
+        "err_rate": 0.0,
+        "p95_ms": 579.9999999999995,
+        "base_rps": 0.15000589308865706,
+        "base_err_rate": 0.0,
+        "base_p95_ms": 2.8222222222222237
+      },
+      "detail": "quote: rps=0.18 err=0.0% p95=580ms (baseline err=0.0%, p95=3ms)",
+      "anomalous": true
+    },
+    {
+      "id": "E2",
+      "kind": "metric",
+      "ref": "span_metrics:shipping",
+      "value": {
+        "rps": 0.21667750054169377,
+        "err_rate": 0.0,
+        "p95_ms": 540.0,
+        "base_rps": 0.18691210488031076,
+        "base_err_rate": 0.0,
+        "base_p95_ms": 7.660000000000001
+      },
+      "detail": "shipping: rps=0.22 err=0.0% p95=540ms (baseline err=0.0%, p95=8ms)",
+      "anomalous": true
+    },
+    {
+      "id": "E3",
+      "kind": "metric",
+      "ref": "span_metrics:email",
+      "value": {
+        "rps": 0.01666750004166875,
+        "err_rate": 0.0,
+        "p95_ms": 48.0,
+        "base_rps": 0.036906211791653716,
+        "base_err_rate": 0.0,
+        "base_p95_ms": 28.000000000000107
+      },
+      "detail": "email: rps=0.02 err=0.0% p95=48ms (baseline err=0.0%, p95=28ms)",
+      "anomalous": true
+    },
+    {
+      "id": "E4",
+      "kind": "metric",
+      "ref": "span_metrics:checkout",
+      "value": {
+        "rps": 0.0333350000833375,
+        "err_rate": 0.0,
+        "p95_ms": 1940.0,
+        "base_rps": 0.036906211791653716,
+        "base_err_rate": 0.0,
+        "base_p95_ms": 1180.0000000000011
+      },
+      "detail": "checkout: rps=0.03 err=0.0% p95=1940ms (baseline err=0.0%, p95=1180ms)",
+      "anomalous": true
+    },
+    {
+      "id": "E5",
+      "kind": "metric",
+      "ref": "span_metrics:ad",
+      "value": {
+        "rps": 0.45002250112505626,
+        "err_rate": 0.0,
+        "p95_ms": 5.65,
+        "base_rps": 0.3928725771369589,
+        "base_err_rate": 0.0,
+        "base_p95_ms": 3.8249999999999984
+      },
+      "detail": "ad: rps=0.45 err=0.0% p95=6ms (baseline err=0.0%, p95=4ms)",
+      "anomalous": false
+    },
+    {
+      "id": "E6",
+      "kind": "metric",
+      "ref": "span_metrics:recommendation",
+      "value": {
+        "rps": 0.7667050019167625,
+        "err_rate": 0.0,
+        "p95_ms": 7.399999999999993,
+        "base_rps": 0.7726494017026859,
+        "base_err_rate": 0.0,
+        "base_p95_ms": 6.394444444444443
+      },
+      "detail": "recommendation: rps=0.77 err=0.0% p95=7ms (baseline err=0.0%, p95=6ms)",
+      "anomalous": false
+    },
+    {
+      "id": "E7",
+      "kind": "metric",
+      "ref": "span_metrics:frontend-proxy",
+      "value": {
+        "rps": 13.567345033918363,
+        "err_rate": 0.0,
+        "p95_ms": 43.569620253164544,
+        "base_rps": 12.700498948172964,
+        "base_err_rate": 0.0,
+        "base_p95_ms": 38.44444444444446
+      },
+      "detail": "frontend-proxy: rps=13.57 err=0.0% p95=44ms (baseline err=0.0%, p95=38ms)",
+      "anomalous": false
+    },
+    {
+      "id": "E8",
+      "kind": "metric",
+      "ref": "span_metrics:frontend",
+      "value": {
+        "rps": 11.700585029251462,
+        "err_rate": 0.0,
+        "p95_ms": 42.78632478632477,
+        "base_rps": 12.370724087970121,
+        "base_err_rate": 0.0,
+        "base_p95_ms": 40.15637319316688
+      },
+      "detail": "frontend: rps=11.70 err=0.0% p95=43ms (baseline err=0.0%, p95=40ms)",
+      "anomalous": false
+    },
+    {
+      "id": "E9",
+      "kind": "metric",
+      "ref": "span_metrics:cart",
+      "value": {
+        "rps": 1.3334000033335,
+        "err_rate": 0.0,
+        "p95_ms": 3.919999999999999,
+        "base_rps": 1.347671991875871,
+        "base_err_rate": 0.0,
+        "base_p95_ms": 3.89185185185185
+      },
+      "detail": "cart: rps=1.33 err=0.0% p95=4ms (baseline err=0.0%, p95=4ms)",
+      "anomalous": false
+    },
+    {
+      "id": "E10",
+      "kind": "metric",
+      "ref": "span_metrics:currency",
+      "value": {
+        "rps": 0.9167125022917813,
+        "err_rate": 0.0,
+        "p95_ms": 1.9000000000000001,
+        "base_rps": 0.9571804606609545,
+        "base_err_rate": 0.0,
+        "base_p95_ms": 1.9
+      },
+      "detail": "currency: rps=0.92 err=0.0% p95=2ms (baseline err=0.0%, p95=2ms)",
+      "anomalous": false
+    },
+    {
+      "id": "E11",
+      "kind": "container",
+      "ref": "container:ad",
+      "value": {
+        "name": "ad",
+        "status": "running",
+        "health": "healthy",
+        "running": true,
+        "restart_count": 8,
+        "exit_code": 0,
+        "oom_killed": false,
+        "started_at": "2026-10-24T06:04:40.8405243Z",
+        "finished_at": "2026-10-24T06:04:39.908120813Z",
+        "cpu_limit_cores": null,
+        "mem_limit_bytes": 314572800
+      },
+      "detail": "ad: restarts=8",
+      "anomalous": true
+    },
+    {
+      "id": "E12",
+      "kind": "container",
+      "ref": "container:email",
+      "value": {
+        "name": "email",
+        "status": "running",
+        "health": "healthy",
+        "running": true,
+        "restart_count": 3,
+        "exit_code": 0,
+        "oom_killed": false,
+        "started_at": "2026-10-24T05:44:01.515603094Z",
+        "finished_at": "2026-10-24T05:44:01.12166874Z",
+        "cpu_limit_cores": null,
+        "mem_limit_bytes": 104857600
+      },
+      "detail": "email: restarts=3",
+      "anomalous": true
+    },
+    {
+      "id": "E13",
+      "kind": "metric",
+      "ref": "span_metrics:shipping:POST /get-quote",
+      "value": null,
+      "detail": "shipping SERVER 'POST /get-quote': err=0.0% p95=580ms rps=0.18",
+      "anomalous": false
+    },
+    {
+      "id": "E14",
+      "kind": "metric",
+      "ref": "span_metrics:shipping:POST",
+      "value": null,
+      "detail": "shipping CLIENT 'POST': err=0.0% p95=580ms rps=0.18",
+      "anomalous": false
+    },
+    {
+      "id": "E15",
+      "kind": "metric",
+      "ref": "span_metrics:shipping:POST /ship-order",
+      "value": null,
+      "detail": "shipping SERVER 'POST /ship-order': err=0.0% p95=2ms rps=0.03",
+      "anomalous": false
+    },
+    {
+      "id": "E16",
+      "kind": "metric",
+      "ref": "span_metrics:quote:POST /getquote",
+      "value": null,
+      "detail": "quote SERVER 'POST /getquote': err=0.0% p95=580ms rps=0.18",
+      "anomalous": false
+    },
+    {
+      "id": "E17",
+      "kind": "metric",
+      "ref": "span_metrics:quote:{closure}",
+      "value": null,
+      "detail": "quote INTERNAL '{closure}': err=0.0% p95=290ms rps=0.18",
+      "anomalous": false
+    },
+    {
+      "id": "E18",
+      "kind": "metric",
+      "ref": "span_metrics:quote:calculate-quote",
+      "value": null,
+      "detail": "quote INTERNAL 'calculate-quote': err=0.0% p95=2ms rps=0.18",
+      "anomalous": false
+    }
+  ]
+}
