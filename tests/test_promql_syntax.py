@@ -26,3 +26,18 @@ def test_no_offset_inside_brackets(monkeypatch):
     bad = [q for q in sent if re.search(r"\[[^\]]*offset", q)]
     assert not bad, bad
     assert any("] offset 20m" in q for q in sent)     # baselines are really requested
+
+
+def test_dependency_latency_skips_negative_gaps(monkeypatch):
+    """caller wait < callee time means the spans were paired wrongly; never report it as evidence."""
+    def promql(q):
+        if "histogram_quantile" in q and "SPAN_KIND_CLIENT" in q:
+            return [{"metric": {"service_name": "checkout", "span_name": "POST"}, "value": 46.0}]
+        if "histogram_quantile" in q:
+            return [{"metric": {"service_name": "frontend-proxy", "span_name": "POST"}, "value": 4541.0}]
+        if "calls_total" in q:
+            return [{"metric": {"service_name": "frontend-proxy", "span_name": "POST"}, "value": 1.0}]
+        return []
+    monkeypatch.setattr(metrics, "promql", promql)
+    out = observe_p1.dependency_latency(Ledger())
+    assert "frontend-proxy" not in out and "-4495" not in out

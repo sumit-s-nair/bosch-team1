@@ -67,5 +67,10 @@ def recovered(original_alerts: list[dict], target: str | None = None, settle_s: 
     last = valid[-1] if valid else {"still_firing": [], "new_alerts": []}
     # the fix's own service must be healthy; alerts on OTHER services are reported, not counted against the fix
     others = [a for a in last["still_firing"] + last["new_alerts"] if a["service"] != target]
-    return {"recovered": clean >= required and (target_ok or not target), "target_recovered": target_ok,
+    if target_ok:
+        # error alerts use 2-5 minute windows, so services that failed BECAUSE of the target (callers) keep alerting
+        # for a while after the fix. Only keep the ones still producing errors in the last minute.
+        others = [a for a in others if a["type"] not in ("error_rate", "operation_errors") or not target_healthy(a["service"])[0]]
+    lingering_only = target_ok and not others
+    return {"recovered": (clean >= required or lingering_only) and (target_ok or not target), "target_recovered": target_ok,
             "other_alerts": others, "required_clean_polls": required, "consecutive_clean_polls": clean, "polls": history}

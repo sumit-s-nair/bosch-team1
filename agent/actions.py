@@ -69,7 +69,15 @@ RUNBOOK = {
     "traffic_spike": ("throttle_load_generator", lambda rc, diag: {"users": 1}),   # demo default is 5 users
     # database_slow / latency_or_network / unknown: no safe allowlisted fix -> escalate with findings
 }
-NOT_RESTARTABLE = {"load-generator", "otel-collector", "prometheus", "jaeger", "opensearch", "grafana", "flagd", "flagd-ui"}
+# same list the Action API protects (action_api/executors.PROTECTED): never proposed, so never refused
+NOT_RESTARTABLE = {"load-generator", "otel-collector", "prometheus", "jaeger", "opensearch", "grafana", "flagd", "flagd-ui",
+                   "frontend-proxy", "opamp-server", "telemetry-docs"}
+
+
+def rollback_text(action: str) -> str:
+    return {"toggle_feature_flag": "turn the flag(s) back on (undo)",
+            "throttle_load_generator": "restore the previous user count (undo)"}.get(action, "none needed for a restart") + \
+        "; if not recovered, escalate to a human"
 
 
 KILL_FILE = Path(__file__).resolve().parents[1] / "STOP"     # <repo>/STOP, independent of the working directory
@@ -123,8 +131,7 @@ def plan(diag: dict, tried: list | None = None) -> dict | None:
     return {"action": action, "params": params,
             "reason": (note + f"{rc.get('category')} in {rc.get('service')}: {rc.get('description', '')}")[:300],
             "expected_effect": "alerting signals return to baseline within ~2 minutes",
-            "rollback": ("turn the flag back on" if action == "toggle_feature_flag"
-                         else "none needed for a restart/throttle") + "; if not recovered, escalate to a human"}
+            "rollback": rollback_text(action)}
 
 
 class ActionClient:

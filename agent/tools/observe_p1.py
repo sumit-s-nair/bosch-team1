@@ -68,6 +68,9 @@ def dependency_latency(L: Ledger, service: str | None = None) -> str:
         callee = max(cands, key=lambda k: srv_rps.get(k, 0.0))
         sp = s_now[callee]
         gap = cp - sp
+        if gap < 0:          # caller can't wait less than the callee works: these spans were paired wrongly, skip
+            unmatched += 1
+            continue
         bgap = (c_base.get((caller, op)) or 0) - (s_base.get(callee) or 0) if (caller, op) in c_base and callee in s_base else 0.0
         bsp = s_base.get(callee)
         rows.append((gap - bgap, caller, callee[0], op, cp, sp, gap, bgap, bsp))

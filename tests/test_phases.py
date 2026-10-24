@@ -224,3 +224,20 @@ def test_investigation_crash_escalates_instead_of_exiting(monkeypatch):
     monkeypatch.setattr(brain, "investigate", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
     rep, _ = run(monkeypatch, "payment_failure", [""])
     assert rep["outcome"] == "escalated to human" and "boom" in rep["root_cause"]["description"]
+
+
+def test_protected_service_is_never_proposed_for_restart():
+    diag = {"decision": "propose_fix", "evidence": [],
+            "root_cause": {"service": "frontend-proxy", "category": "container_down", "description": "x"}}
+    assert actions.plan(diag) is None
+    assert actions.fallback("toggle_feature_flag", {"service": "frontend-proxy", "state": "off"}) is None
+
+
+def test_refused_fallback_escalates_and_rollback_text_matches_the_action(monkeypatch):
+    model_says(monkeypatch, "payment", "service_error")
+    monkeypatch.setattr(run_offline.SimulatedActionClient, "dry_run",
+                        lambda self, p: {"status": "refused", "why": "nope " + p["action"]})
+    rep, _ = run(monkeypatch, "payment_failure", [""])
+    assert rep["action"] is None and rep["outcome"] == "escalated to human"
+    assert actions.plan({"decision": "propose_fix", "evidence": [], "root_cause": {
+        "service": "payment", "category": "container_down", "description": "x"}})["rollback"].startswith("none needed")

@@ -64,8 +64,13 @@ def run(mode="now", ask_fn=None, client_factory=None, validate_kw=None, on_execu
                 inc.event("investigate", f"{p['action']} {p['params']} not possible: {check.get('why')}")
                 alt = actions.fallback(p["action"], p["params"])
                 if alt and not any(actions._same(alt, t) for t in tried):
-                    p = {**p, "action": alt["action"], "params": alt["params"], "reason": alt["note"] + p["reason"]}
+                    p = {**p, "action": alt["action"], "params": alt["params"], "reason": alt["note"] + p["reason"],
+                         "rollback": actions.rollback_text(alt["action"])}
                     check = client.dry_run(p)
+                    if check.get("status") == "refused":
+                        inc.event("investigate", f"{p['action']} {p['params']} not possible either: {check.get('why')}")
+                        diag["decision"], p = "escalate", None
+                        diag.setdefault("validation_notes", []).append(f"no possible fix: {check.get('why')}")
                 else:
                     diag["decision"], p = "escalate", None
                     diag.setdefault("validation_notes", []).append(f"no possible fix: {check.get('why')}")
